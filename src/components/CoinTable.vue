@@ -1,11 +1,45 @@
 <template>
   <div>
-    <n-auto-complete 
-      v-model:value="inputValue" 
-      :options="autoCompleteOptions" 
-      placeholder="请输入币种名称" 
-      @keyup.enter="onSearch" 
-    /> 
+    <div class="controls-row">
+      <n-auto-complete 
+        v-model:value="inputValue" 
+        :options="autoCompleteOptions" 
+        placeholder="请输入币种名称" 
+        @keyup.enter="onSearch" 
+        style="width: 300px; margin-right: 16px;"
+      />
+      <n-switch 
+        v-model:value="soundEnabled" 
+        size="small"
+      >
+        <template #checked>
+          🔊 提示音
+        </template>
+        <template #unchecked>
+          🔇 静音
+        </template>
+      </n-switch>
+    </div>
+    
+     <!-- 颜色含义说明 -->
+     <div class="color-legend">
+       <span class="legend-item">
+         <span class="color-box" style="background-color: #dcfce7;"></span>
+         正常上涨
+       </span>
+       <span class="legend-item">
+         <span class="color-box" style="background-color: #dbeafe;"></span>
+         快速拉升(≥2%)
+       </span>
+       <span class="legend-item">
+         <span class="color-box" style="background-color: #fef3c7;"></span>
+         下跌
+       </span>
+       <span class="legend-item">
+         <span class="color-box" style="background-color: #fecaca;"></span>
+         跌破阈值
+       </span>
+     </div>
     <div class="table-wrapper" ref="tableWrapperRef">
       <n-data-table 
         ref="dataTableRef" 
@@ -23,7 +57,7 @@
 
 <script setup>
 import { ref, reactive, computed, h, nextTick, watch, onMounted } from 'vue'
-import { NButton, NTooltip, NInputNumber } from 'naive-ui'
+import { NButton, NTooltip, NInputNumber, NSwitch, useNotification } from 'naive-ui'
 import axios from 'axios'
 
 // Props
@@ -47,7 +81,133 @@ const tableData = reactive([])
 const timeColumns = ref([])
 const supportedCoins = ref([])
 const inputValue = ref('')
+const soundEnabled = ref(true) // 提示音开关，默认开启
 const CELL_WIDTH = 70
+
+// 通知实例
+const notification = useNotification()
+
+// 存储已触发的警告，避免重复触发
+const triggeredWarnings = ref(new Set())
+
+// 触发阈值警告
+function triggerThresholdWarning(coin, timestamp, type, actualValue, threshold) {
+  const warningKey = `${coin}-${timestamp}-${type}` // 包含时间戳，避免误阻止
+  
+  // 避免重复触发同一个警告
+  if (triggeredWarnings.value.has(warningKey)) {
+    return
+  }
+  
+  triggeredWarnings.value.add(warningKey)
+  
+  // 格式化数值显示
+  const formatValue = (value, isPercent, isDropAmount = false) => {
+    if (isPercent) {
+      return `${value.toFixed(1)}%`
+    } else if (isDropAmount) {
+      // 跌量阈值直接显示万为单位
+      return `${value.toFixed(1)}万`
+    } else {
+      if (value >= 1e8) {
+        return `${(value / 1e8).toFixed(1)}亿`
+      } else if (value >= 1e4) {
+        return `${(value / 1e4).toFixed(1)}万`
+      } else {
+        return value.toLocaleString('en-US')
+      }
+    }
+  }
+  
+  const isPercent = type === '跌幅' || type === '拉升'
+  const isDropAmount = type === '跌量'
+  const formattedActual = formatValue(actualValue, isPercent)
+  const formattedThreshold = formatValue(threshold, isPercent, isDropAmount)
+  
+  // 根据类型选择不同的通知样式
+  const isRiseAlert = type === '拉升'
+  const notificationConfig = {
+    title: isRiseAlert ? '快速拉升提醒' : '持仓量下降预警',
+    content: `${coin}的${type}为${formattedActual}，超过阈值${formattedThreshold}。数据出现时间：${timestamp}`,
+    duration: 0, // 不自动关闭
+    closable: true,
+    onClose: () => {
+      // 警告关闭时从已触发列表中移除，但使用更持久的key
+      // 使用币种+类型作为key，避免同一币种的同一类型警告重复出现
+      const persistentKey = `${coin}-${type}`
+      triggeredWarnings.value.add(persistentKey)
+    }
+  }
+  
+  if (isRiseAlert) {
+    notification.info(notificationConfig)
+  } else {
+    notification.error(notificationConfig)
+  }
+  
+  // 播放警告声音
+  playAlertSound()
+}
+
+// 播放警告声音
+function playAlertSound() {
+  // 检查提示音开关
+  if (!soundEnabled.value) {
+    return
+  }
+  
+  try {
+    // 检查浏览器是否支持Web Audio API
+    if (!window.AudioContext && !window.webkitAudioContext) {
+      console.warn('浏览器不支持Web Audio API')
+      return
+    }
+    
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+    
+    // 检查音频上下文状态
+    if (audioContext.state === 'suspended') {
+      // 尝试恢复音频上下文（需要用户交互）
+      audioContext.resume().then(() => {
+        playSound(audioContext)
+      }).catch(err => {
+        console.warn('无法恢复音频上下文:', err)
+      })
+    } else {
+      playSound(audioContext)
+    }
+  } catch (err) {
+    console.warn('音频播放失败:', err)
+  }
+}
+
+// 实际播放声音的函数
+function playSound(audioContext) {
+  try {
+    const oscillator = audioContext.createOscillator()
+    const gainNode = audioContext.createGain()
+    
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+    
+    // 创建更明显的提示音：三声短促的"哔"声
+    oscillator.frequency.setValueAtTime(1000, audioContext.currentTime)
+    oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.1)
+    oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.2)
+    
+    gainNode.gain.setValueAtTime(0.5, audioContext.currentTime)
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime + 0.1)
+    gainNode.gain.setValueAtTime(0.5, audioContext.currentTime + 0.1)
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime + 0.2)
+    gainNode.gain.setValueAtTime(0.5, audioContext.currentTime + 0.2)
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime + 0.3)
+    
+    oscillator.start(audioContext.currentTime)
+    oscillator.stop(audioContext.currentTime + 0.3)
+  } catch (err) {
+    console.warn('声音播放失败:', err)
+  }
+}
 
 // AutoComplete options for the input field
 const autoCompleteOptions = computed(() => {
@@ -83,7 +243,6 @@ async function getAllSupportedCoins() {
     const unique = Array.from(new Set(data.map((c) => String(c))))
     return unique
   } catch (err) {
-    console.error(err)
     return []
   }
 }
@@ -152,27 +311,95 @@ function formatWithSeparators(amount) {
   return n.toLocaleString('en-US')
 }
 
-// 获取币种位置信息
-async function getCoinPosition(coin) {
-  try {
-    const endpoint = props.apiPrefix ? 
-      `${import.meta.env.VITE_API_BASE}${props.apiPrefix}/single_coin_interest_info/${coin}` :
-      `${import.meta.env.VITE_API_BASE}/single_coin_interest_info/${coin}`
-    
-    const res = await axios.get(endpoint)
-    const data = res.data
-    if (data && data.value !== undefined && data.timestamp) {
-      return {
-        value: Number(data.value) || 0,
-        timestamp: data.timestamp,
-        dataCount: data.data_count || 0,
-        isMonitored: data.is_monitored || false
+// 获取单元格背景色
+function getCellColor(row, timestamp, isNewData = false) {
+  const currentValue = row._rawByTime && row._rawByTime[timestamp]
+  if (currentValue === undefined || currentValue === null || currentValue === 0) return ''
+  
+  // 获取当前时间戳在时间列中的索引
+  const currentIndex = timeColumns.value.indexOf(timestamp)
+  if (currentIndex === -1) return ''
+  
+  // 如果是第一个数据点，显示绿色
+  if (currentIndex === 0) {
+    return 'background-color: #dcfce7;' // 浅绿色
+  }
+  
+  // 获取前一个时间戳的值
+  const prevTimestamp = timeColumns.value[currentIndex - 1]
+  const prevValue = row._rawByTime && row._rawByTime[prevTimestamp]
+  
+  if (prevValue === undefined || prevValue === null || prevValue === 0) return ''
+  
+  // 检查是否超过阈值（只有新数据才触发警告）
+  const dropAmount = prevValue - currentValue
+  const dropPercent = (dropAmount / prevValue) * 100
+  
+  // 检查跌量阈值（用户输入的是万为单位，需要转换为实际数值）
+  const dropAmountThresholdInWan = row._dropAmountThreshold || 0
+  const dropAmountThreshold = dropAmountThresholdInWan * 10000 // 转换为实际数值
+  if (dropAmountThreshold > 0 && dropAmount >= dropAmountThreshold) {
+    // 触发警告（只有新数据才触发）
+    if (isNewData) {
+      const warningKey = `${row.coin}-${timestamp}-跌量`
+      if (!triggeredWarnings.value.has(warningKey)) {
+        triggerThresholdWarning(row.coin, timestamp, '跌量', dropAmount, dropAmountThresholdInWan)
       }
     }
-    return { value: 0, timestamp: null, dataCount: 0, isMonitored: false }
+    return 'background-color: #fecaca;' // 浅红色
+  }
+  
+  // 检查跌幅阈值
+  if (row._dropPercentThreshold && row._dropPercentThreshold > 0 && dropPercent >= row._dropPercentThreshold) {
+    // 触发警告（只有新数据才触发）
+    if (isNewData) {
+      const warningKey = `${row.coin}-${timestamp}-跌幅`
+      if (!triggeredWarnings.value.has(warningKey)) {
+        triggerThresholdWarning(row.coin, timestamp, '跌幅', dropPercent, row._dropPercentThreshold)
+      }
+    }
+    return 'background-color: #fecaca;' // 浅红色
+  }
+  
+  // 检查快速拉升（涨幅超过2%）- 仅改变颜色，不弹出通知
+  const risePercent = ((currentValue - prevValue) / prevValue) * 100
+  if (risePercent >= 2) {
+    return 'background-color: #dbeafe;' // 浅蓝色 - 快速拉升提醒
+  }
+  
+  // 如果当前值大于等于前一个值，显示绿色
+  if (currentValue >= prevValue) {
+    return 'background-color: #dcfce7;' // 浅绿色
+  } else {
+    return 'background-color: #fef3c7;' // 浅黄色
+  }
+}
+
+// 批量获取币种位置信息
+async function getBatchCoinPositions(coins) {
+  try {
+    const endpoint = props.apiPrefix ? 
+      `${import.meta.env.VITE_API_BASE}${props.apiPrefix}/batch_coin_interest_info` :
+      `${import.meta.env.VITE_API_BASE}/batch_coin_interest_info`
+    
+    const res = await axios.post(endpoint, { coins })
+    const data = res.data
+    if (data && data.results && Array.isArray(data.results)) {
+      // 将结果转换为以币种为key的对象，方便查找
+      const resultMap = {}
+      data.results.forEach(item => {
+        resultMap[item.coin] = {
+          value: Number(item.value) || 0,
+          timestamp: item.timestamp,
+          dataCount: item.data_count || 0,
+          isMonitored: item.is_monitored || false
+        }
+      })
+      return resultMap
+    }
+    return {}
   } catch (err) {
-    console.error(err)
-    return { value: 0, timestamp: null, dataCount: 0, isMonitored: false }
+    return {}
   }
 }
 
@@ -199,7 +426,6 @@ async function fetchCoinInfo(coin) {
     }
     return null
   } catch (err) {
-    console.error(err)
     return null
   }
 }
@@ -215,19 +441,16 @@ async function fetchPoolCoins() {
     const list = Array.isArray(res.data && res.data.coins) ? res.data.coins : []
     return list.map((c) => String(c))
   } catch (err) {
-    console.error(err)
     return []
   }
 }
 
 // 恢复所有币的历史数据并重建时间列
 async function restoreHistoricalData() {
-  console.log('restoreHistoricalData called, tableData length:', tableData.length)
   const allTimePoints = new Set()
   
   // 为每个币获取历史数据
   for (const row of tableData) {
-    console.log('Processing coin:', row.coin)
     if (!row._firstCapture) {
       const coinInfo = await fetchCoinInfo(row.coin)
       if (coinInfo) {
@@ -253,7 +476,6 @@ async function restoreHistoricalData() {
         })
       }
     } catch (err) {
-      console.warn(`Failed to fetch historical data for ${row.coin}:`, err.message)
       // 不抛出错误，继续处理其他币种
     }
   }
@@ -269,6 +491,11 @@ async function restoreHistoricalData() {
       key: 'coin',
       fixed: 'left',
       width: CELL_WIDTH * 1.5, // 105px
+      sorter: (rowA, rowB) => {
+        const percentA = typeof rowA._changePercent === 'number' && isFinite(rowA._changePercent) ? rowA._changePercent : 0
+        const percentB = typeof rowB._changePercent === 'number' && isFinite(rowB._changePercent) ? rowB._changePercent : 0
+        return percentB - percentA // 降序排列，涨幅大的在前
+      },
       render: (row) => {
         const pct = typeof row._changePercent === 'number' && isFinite(row._changePercent)
           ? row._changePercent
@@ -306,19 +533,27 @@ async function restoreHistoricalData() {
       title: time,
       key: time,
       width: CELL_WIDTH,
-      render: (row) =>
-        h(
+      render: (row) => {
+        const cellStyle = getCellColor(row, time, false) // 历史数据，不触发警告
+        
+        // 确保显示值不为 undefined
+        const displayValue = row[time] !== undefined ? row[time] : '0'
+        const rawValue = row._rawByTime && row._rawByTime[time] !== undefined ? row._rawByTime[time] : 0
+        
+        return h(
           NTooltip,
           { placement: 'top' },
           {
-            trigger: () => h('span', null, row[time] || '0'),
-            default: () => formatWithSeparators(row._rawByTime && row._rawByTime[time])
+            trigger: () => h('span', { style: cellStyle }, displayValue),
+            default: () => formatWithSeparators(rawValue)
           }
         )
+      }
     })
   })
   
-  // 添加操作列
+  // 添加阈值列和操作列
+  newColumns.push(thresholdsColumn)
   newColumns.push(actionColumn)
   columns.value = newColumns
 }
@@ -330,7 +565,19 @@ async function rebuildTableForCoins(newCoins) {
   // 重建表格数据
   const newTableData = []
   for (const coin of internalCoins.value) {
-    const row = { coin, _rawByTime: {} }
+    const row = { 
+      coin, 
+      _rawByTime: {},
+      _dropAmountThreshold: 0,
+      _dropPercentThreshold: 2 // 默认跌幅阈值2%
+    }
+    
+    // 为所有现有时间列初始化为 '0'
+    timeColumns.value.forEach((timestamp) => {
+      row[timestamp] = '0'
+      row._rawByTime[timestamp] = 0
+    })
+    
     newTableData.push(row)
   }
   tableData.splice(0, tableData.length, ...newTableData)
@@ -345,8 +592,9 @@ const debouncedRefresh = () => {
 
 // 刷新表格
 async function refreshTable() {
-  // 并发请求所有币（返回新格式数据）
-  const results = await Promise.all(internalCoins.value.map(getCoinPosition))
+  // 批量请求所有币（返回新格式数据）
+  const batchResults = await getBatchCoinPositions(internalCoins.value)
+  const results = internalCoins.value.map(coin => batchResults[coin] || { value: 0, timestamp: null, dataCount: 0, isMonitored: false })
 
   // 收集所有新的时间戳
   const newTimestamps = new Set()
@@ -361,6 +609,10 @@ async function refreshTable() {
     
     // 检查时间是否比当前最新时间更新
     const shouldUpdate = timestamp && (!row._latestTimestamp || timestamp > row._latestTimestamp)
+    
+    if (shouldUpdate) {
+      // 数据更新逻辑
+    }
     
     if (shouldUpdate) {
       const display = formatDisplayNumber(raw)
@@ -388,12 +640,12 @@ async function refreshTable() {
       }
       
       // 计算相对首次值的涨跌百分比
-      if (row._firstCapture) {
+      if (row._firstCapture && raw > 0) {
         const baseline = typeof row._firstCapture.baseline === 'number' && isFinite(row._firstCapture.baseline)
           ? row._firstCapture.baseline
           : parseDisplayToNumber(row._firstCapture.value)
         const current = raw
-        if (isFinite(baseline) && baseline !== 0 && isFinite(current)) {
+        if (isFinite(baseline) && baseline !== 0 && isFinite(current) && current > 0) {
           row._changePercent = ((current - baseline) / baseline) * 100
         } else {
           row._changePercent = undefined
@@ -404,7 +656,6 @@ async function refreshTable() {
   
   // 如果有新币种第一次有数据，触发重新加载
   if (needsReload) {
-    console.log('检测到新币种第一次有数据，触发重新加载')
     const serverCoins = await fetchPoolCoins()
     await rebuildTableForCoins(serverCoins)
     await restoreHistoricalData()
@@ -418,18 +669,32 @@ async function refreshTable() {
       title: timestamp,
       key: timestamp,
       width: CELL_WIDTH,
-      render: (row) =>
-        h(
+      render: (row) => {
+        // 检查这个时间戳是否真的是新数据（比最新时间戳更新）
+        const isReallyNewData = row._latestTimestamp === timestamp
+        const cellStyle = getCellColor(row, timestamp, isReallyNewData)
+        
+        // 确保显示值不为 undefined
+        const displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
+        const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
+        
+        return h(
           NTooltip,
           { placement: 'top' },
           {
-            trigger: () => h('span', null, row[timestamp] || '0'),
-            default: () => formatWithSeparators(row._rawByTime && row._rawByTime[timestamp])
+            trigger: () => h('span', { style: cellStyle }, displayValue),
+            default: () => formatWithSeparators(rawValue)
           }
         )
+      }
     };
     const last = columns.value[columns.value.length - 1];
-    if (last && last.key === 'actions') {
+    const secondLast = columns.value[columns.value.length - 2];
+    
+    // 如果最后两列是阈值列和操作列，则在阈值列之前插入新列
+    if (last && last.key === 'actions' && secondLast && secondLast.key === 'thresholds') {
+      columns.value.splice(columns.value.length - 2, 0, newCol);
+    } else if (last && last.key === 'actions') {
       columns.value.splice(columns.value.length - 1, 0, newCol);
     } else {
       columns.value.push(newCol);
@@ -457,7 +722,6 @@ async function checkServerCoinsSync() {
     
     // 比较币列表是否有变化
     if (JSON.stringify(currentCoins) !== JSON.stringify(serverCoinsSorted)) {
-      console.log('币列表有变化，同步更新')
       
       // 找出新增和删除的币种
       const addedCoins = serverCoins.filter(coin => !internalCoins.value.includes(coin))
@@ -475,7 +739,12 @@ async function checkServerCoinsSync() {
       for (const coin of addedCoins) {
         if (!internalCoins.value.includes(coin)) {
           internalCoins.value.push(coin)
-          const newRow = { coin, _rawByTime: {} }
+          const newRow = { 
+            coin, 
+            _rawByTime: {},
+            _dropAmountThreshold: 0,
+            _dropPercentThreshold: 2 // 默认跌幅阈值2%
+          }
           // 为已有时间列初始化为 0
           timeColumns.value.forEach((t) => {
             newRow[t] = '0'
@@ -498,7 +767,7 @@ async function checkServerCoinsSync() {
       emit('update:coins', [...internalCoins.value])
     }
   } catch (err) {
-    console.error('检查币列表同步失败:', err)
+    // 静默处理同步错误
   }
 }
 
@@ -513,7 +782,12 @@ async function addCoin(value) {
       // 只添加新币到现有表格，保持历史数据
       if (!internalCoins.value.includes(value)) {
         internalCoins.value.push(value)
-        const newRow = { coin: value, _rawByTime: {} }
+        const newRow = { 
+          coin: value, 
+          _rawByTime: {},
+          _dropAmountThreshold: 0,
+          _dropPercentThreshold: 2 // 默认跌幅阈值2%
+        }
         // 为已有时间列初始化为 0
         timeColumns.value.forEach((t) => {
           newRow[t] = '0'
@@ -530,7 +804,7 @@ async function addCoin(value) {
       await refreshTable()
     })
     .catch((err) => {
-      console.error(err)
+      // 静默处理错误
       throw err
     })
 }
@@ -556,7 +830,7 @@ async function deleteCoin(coin) {
       await refreshTable()
     })
     .catch((err) => {
-      console.error(err)
+      // 静默处理错误
       throw err
     })
 }
@@ -591,6 +865,51 @@ async function scrollToRightMost() {
   }
 }
 
+// 阈值列定义
+const thresholdsColumn = {
+  title:     h('div', { style: 'text-align: center; font-size: 11px;' }, [
+      h('div', '阈值设置'),
+      h('div', { style: 'display: flex; justify-content: space-between; margin-top: 2px; font-size: 10px; color: #666;' }, [
+        h('span', '跌量(万)'),
+        h('span', '跌幅%')
+      ])
+    ]),
+  key: 'thresholds',
+  fixed: 'right',
+  width: CELL_WIDTH * 2, // 140px
+  render: (row) => {
+    return h('div', { 
+      style: 'display: flex; gap: 4px; align-items: center; padding: 2px;' 
+    }, [
+        h(NInputNumber, {
+          value: row._dropAmountThreshold || 0,
+          'onUpdate:value': (value) => {
+            row._dropAmountThreshold = value || 0
+          },
+          size: 'small',
+          min: 0,
+          precision: 0,
+          placeholder: '跌量(万)',
+          style: 'width: 60px;',
+          showButton: false
+        }),
+      h(NInputNumber, {
+        value: row._dropPercentThreshold || 2,
+        'onUpdate:value': (value) => {
+          row._dropPercentThreshold = value || 2
+        },
+        size: 'small',
+        min: 0,
+        max: 100,
+        precision: 1,
+        placeholder: '跌幅%',
+        style: 'width: 60px;',
+        showButton: false
+      })
+    ])
+  }
+}
+
 // 操作列定义
 const actionColumn = {
   title: '操作',
@@ -615,6 +934,11 @@ const coinColumn = {
   key: 'coin',
   fixed: 'left',
   width: CELL_WIDTH * 1.5, // 105px
+  sorter: (rowA, rowB) => {
+    const percentA = typeof rowA._changePercent === 'number' && isFinite(rowA._changePercent) ? rowA._changePercent : 0
+    const percentB = typeof rowB._changePercent === 'number' && isFinite(rowB._changePercent) ? rowB._changePercent : 0
+    return percentB - percentA // 降序排列，涨幅大的在前
+  },
   render: (row) => {
     const pct = typeof row._changePercent === 'number' && isFinite(row._changePercent)
       ? row._changePercent
@@ -648,6 +972,7 @@ const coinColumn = {
 // 列定义
 const columns = ref([
   coinColumn,
+  thresholdsColumn,
   actionColumn
 ])
 
@@ -672,22 +997,16 @@ defineExpose({
 
 // 初始化
 onMounted(async () => {
-  console.log('CoinTable mounted')
-  
   // 获取支持的币种列表
   supportedCoins.value = await getAllSupportedCoins()
-  console.log('supportedCoins:', supportedCoins.value)
   
   // 获取服务器币列表并初始化表格
   const serverCoins = await fetchPoolCoins()
-  console.log('serverCoins:', serverCoins)
   await rebuildTableForCoins(serverCoins)
-  console.log('After rebuildTableForCoins, tableData:', tableData)
   await restoreHistoricalData() // 恢复历史数据
-  console.log('After restoreHistoricalData, tableData:', tableData)
   
   // 启动定时器
-  setInterval(refreshTable, 10 * 1000) // 每10秒刷新数据（降低频率）
+  setInterval(refreshTable, 5 * 1000) // 每5秒刷新数据（降低频率）
   setInterval(checkServerCoinsSync, 30 * 1000) // 每30秒检查币列表同步（降低频率）
   
   // 首次刷新
@@ -697,6 +1016,38 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.controls-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+  gap: 16px;
+}
+
+.color-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background-color: #f8f9fa;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #666;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.color-box {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid #ddd;
+}
+
 .table-wrapper {
   width: 100%;
   overflow-x: auto;
@@ -742,5 +1093,20 @@ onMounted(async () => {
 :deep(.n-data-table .n-data-table-th) {
   padding: 2px 4px !important;
   font-size: 12px;
+}
+
+/* 阈值输入框样式 */
+:deep(.n-input-number .n-input) {
+  font-size: 10px;
+  padding: 2px 4px;
+}
+
+/* 隐藏输入框的+-按钮 */
+:deep(.n-input-number .n-input-number-suffix) {
+  display: none !important;
+}
+
+:deep(.n-input-number .n-input-number-prefix) {
+  display: none !important;
 }
 </style>
