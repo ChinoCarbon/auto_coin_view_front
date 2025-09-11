@@ -19,6 +19,27 @@
           🔇 静音
         </template>
       </n-switch>
+      
+      <!-- 导出按钮 -->
+      <n-button 
+        type="primary" 
+        size="small" 
+        @click="exportSelectedData"
+        :disabled="selectedRowKeys.length === 0"
+        style="margin-left: 16px;"
+      >
+        导出选中数据 ({{ selectedRowKeys.length }})
+      </n-button>
+      
+      <!-- 测试导出按钮 -->
+      <n-button 
+        type="info" 
+        size="small" 
+        @click="testExport"
+        style="margin-left: 8px;"
+      >
+        测试导出
+      </n-button>
     </div>
     
      <!-- 颜色含义说明 -->
@@ -50,6 +71,10 @@
         bordered 
         striped
         :default-sort="{ columnKey: 'coin', order: 'descend' }"
+        :row-key="row => row.coin"
+        v-model:checked-row-keys="selectedRowKeys"
+        @update:checked-row-keys="onCheckedRowKeysChange"
+        :pagination="false"
       />
     </div>
   </div>
@@ -59,6 +84,7 @@
 import { ref, reactive, computed, h, nextTick, watch, onMounted } from 'vue'
 import { NButton, NTooltip, NInputNumber, NSwitch, useNotification } from 'naive-ui'
 import axios from 'axios'
+import * as XLSX from 'xlsx'
 
 // Props
 const props = defineProps({
@@ -68,17 +94,20 @@ const props = defineProps({
   }
 })
 
-// Emits
+// 定义事件
 const emit = defineEmits([
   'coin-added',
   'coin-deleted',
-  'table-refreshed'
+  'table-refreshed',
+  'notification-added',
+  'row-selection'
 ])
 
 // 内部状态
 const internalCoins = ref([])
 const tableData = reactive([])
 const timeColumns = ref([])
+const selectedRowKeys = ref([])
 const supportedCoins = ref([])
 const inputValue = ref('')
 const soundEnabled = ref(true) // 提示音开关，默认开启
@@ -124,29 +153,26 @@ function triggerThresholdWarning(coin, timestamp, type, actualValue, threshold) 
   const formattedActual = formatValue(actualValue, isPercent)
   const formattedThreshold = formatValue(threshold, isPercent, isDropAmount)
   
-  // 根据类型选择不同的通知样式
-  const isRiseAlert = type === '拉升'
-  const notificationConfig = {
-    title: isRiseAlert ? '快速拉升提醒' : '持仓量下降预警',
-    content: `${coin}的${type}为${formattedActual}，超过阈值${formattedThreshold}。数据出现时间：${timestamp}`,
-    duration: 0, // 不自动关闭
-    closable: true,
-    onClose: () => {
-      // 警告关闭时从已触发列表中移除，但使用更持久的key
-      // 使用币种+类型作为key，避免同一币种的同一类型警告重复出现
-      const persistentKey = `${coin}-${type}`
-      triggeredWarnings.value.add(persistentKey)
-    }
+  // 创建通知对象
+  const notification = {
+    id: Date.now() + Math.random(),
+    coin,
+    timestamp,
+    type,
+    actualValue,
+    threshold,
+    formattedActual,
+    formattedThreshold,
+    time: new Date().toLocaleTimeString()
   }
   
-  if (isRiseAlert) {
-    notification.info(notificationConfig)
-  } else {
-    notification.error(notificationConfig)
-  }
+  // 发送通知事件到父组件
+  emit('notification-added', notification)
   
   // 播放警告声音
-  playAlertSound()
+  if (soundEnabled.value) {
+    playAlertSound()
+  }
 }
 
 // 播放警告声音
@@ -486,6 +512,7 @@ async function restoreHistoricalData() {
   
   // 重建列定义
   const newColumns = [
+    selectionColumn, // 添加选择列
     {
       title: '币种',
       key: 'coin',
@@ -592,6 +619,12 @@ const debouncedRefresh = () => {
 
 // 刷新表格
 async function refreshTable() {
+  // 如果管理员列表为空，直接返回
+  if (internalCoins.value.length === 0) {
+    console.log('管理员列表为空，跳过数据请求')
+    return
+  }
+  
   // 批量请求所有币（返回新格式数据）
   const batchResults = await getBatchCoinPositions(internalCoins.value)
   const results = internalCoins.value.map(coin => batchResults[coin] || { value: 0, timestamp: null, dataCount: 0, isMonitored: false })
@@ -969,8 +1002,18 @@ const coinColumn = {
   }
 }
 
+// 选择列定义
+const selectionColumn = {
+  type: 'selection',
+  width: 50,
+  fixed: 'left',
+  title: '',
+  resizable: false
+}
+
 // 列定义
 const columns = ref([
+  selectionColumn,
   coinColumn,
   thresholdsColumn,
   actionColumn
@@ -987,10 +1030,189 @@ const updateScrollX = () => {
 const tableWrapperRef = ref(null)
 const dataTableRef = ref(null)
 
+// 选择事件处理
+function onCheckedRowKeysChange(keys) {
+  console.log('CoinTable 选择键变化:', keys)
+  selectedRowKeys.value = keys
+  const selectedRows = keys.map(key => tableData.find(row => row.coin === key)).filter(Boolean)
+  console.log('CoinTable 选中的行数据:', selectedRows)
+  emit('row-selection', selectedRows)
+}
+
+// 获取表格数据的方法
+function getTableData() {
+  return tableData.map(row => ({
+    ...row,
+    _timeColumns: timeColumns.value
+  }))
+}
+
+// 导出选中数据
+function exportSelectedData() {
+  if (selectedRowKeys.value.length === 0) {
+    console.warn('没有选中任何数据')
+    return
+  }
+  
+  console.log('开始导出选中数据:', selectedRowKeys.value)
+  console.log('当前表格数据:', tableData)
+  console.log('时间列配置:', timeColumns.value)
+  
+  // 获取选中的行数据
+  const selectedRows = selectedRowKeys.value.map(key => 
+    tableData.find(row => row.coin === key)
+  ).filter(Boolean)
+  
+  console.log('选中的行数据:', selectedRows)
+  
+  if (selectedRows.length === 0) {
+    console.warn('没有找到选中的数据')
+    return
+  }
+  
+  // 转换数据格式
+  const exportData = convertToExcelFormat(selectedRows)
+  console.log('转换后的导出数据:', exportData)
+  
+  // 生成文件名
+  const tableType = props.apiPrefix === '/admin' ? '管理员' : '普通用户'
+  const dateStr = new Date().toISOString().slice(0, 10)
+  const filename = `${tableType}数据_${dateStr}`
+  
+  // 下载文件
+  downloadExcel(exportData, filename)
+}
+
+// 转换数据为Excel格式
+function convertToExcelFormat(rows) {
+  if (rows.length === 0) return []
+  
+  console.log('开始转换数据，输入行数:', rows.length)
+  console.log('时间列:', timeColumns.value)
+  console.log('第一行数据示例:', rows[0])
+  console.log('第一行数据的所有键:', Object.keys(rows[0] || {}))
+  console.log('第一行数据的_rawByTime:', rows[0]?._rawByTime)
+  
+  // 检查是否有数据
+  if (rows.length > 0) {
+    console.log('检查第一行的时间列数据:')
+    timeColumns.value.forEach(col => {
+      const timestamp = col.key
+      console.log(`  ${timestamp}: row[${timestamp}] = ${rows[0][timestamp]}, _rawByTime[${timestamp}] = ${rows[0]._rawByTime?.[timestamp]}`)
+    })
+  }
+  
+  // 创建表头（时间列标题去掉前缀 K 以便阅读）
+  const headers = ['币种']
+  
+  // 添加时间列头
+  if (timeColumns.value && timeColumns.value.length > 0) {
+    timeColumns.value.forEach((timestamp) => {
+      const title = typeof timestamp === 'string' ? timestamp.replace(/^K/, '') : String(timestamp)
+      headers.push(title)
+    })
+  }
+  
+  console.log('表头:', headers)
+  
+  const data = [headers]
+  
+  // 添加数据行
+  rows.forEach((row, index) => {
+    console.log(`处理第${index + 1}行:`, row)
+    const rowData = [row.coin]
+    
+    // 添加时间数据（timeColumns 为字符串时间键，如 'K21:41:04'）
+    if (timeColumns.value && timeColumns.value.length > 0) {
+      timeColumns.value.forEach((timestamp) => {
+        const key = typeof timestamp === 'string' ? timestamp : String(timestamp)
+        console.log(`处理时间列 ${key}:`)
+        console.log(`  row[${key}]:`, row[key])
+        console.log(`  row._rawByTime[${key}]:`, row._rawByTime?.[key])
+        
+        // 使用显示值（带汉字的格式），然后只提取数字部分
+        const displayValue = row[key]
+        console.log(`  显示值: ${displayValue}`)
+        
+        if (displayValue !== undefined && displayValue !== null && displayValue !== '0') {
+          // 只去掉汉字，保留数字和小数点
+          const cleanValue = String(displayValue).replace(/[^\d.-]/g, '')
+          const numValue = parseFloat(cleanValue)
+          console.log(`  清理后的值: ${cleanValue} -> 数字: ${numValue}`)
+          rowData.push(isNaN(numValue) ? 0 : numValue)
+        } else {
+          console.log(`  值为空或0，添加0`)
+          rowData.push(0)
+        }
+      })
+    }
+    
+    console.log(`第${index + 1}行数据:`, rowData)
+    data.push(rowData)
+  })
+  
+  console.log('最终导出数据:', data)
+  return data
+}
+
+// 下载Excel文件
+function downloadExcel(data, filename) {
+  if (data.length === 0) {
+    console.warn('没有数据可导出')
+    return
+  }
+  
+  try {
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.aoa_to_sheet(data)
+    
+    // 设置列宽
+    const colWidths = data[0].map((_, index) => {
+      if (index === 0) return { wch: 10 } // 币种列
+      if (index === 1) return { wch: 12 } // 涨跌幅列
+      return { wch: 15 } // 其他列
+    })
+    ws['!cols'] = colWidths
+    
+    XLSX.utils.book_append_sheet(wb, ws, '数据')
+    
+    const fileName = `${filename}.xlsx`
+    XLSX.writeFile(wb, fileName)
+    console.log('文件导出成功:', fileName)
+  } catch (error) {
+    console.error('导出失败:', error)
+  }
+}
+
+// 测试导出功能
+function testExport() {
+  console.log('=== 测试导出功能 ===')
+  console.log('当前选中键:', selectedRowKeys.value)
+  console.log('表格数据:', tableData.value)
+  console.log('时间列:', timeColumns.value)
+  
+  // 创建测试数据
+  const testData = [
+    ['币种', '2024-01-15 10:00', '2024-01-15 10:05'],
+    ['BTC', 235, 240],
+    ['ETH', 1200, 1180]
+  ]
+  
+  console.log('测试数据:', testData)
+  
+  // 直接测试下载
+  const tableType = props.apiPrefix === '/admin' ? '管理员' : '普通用户'
+  const dateStr = new Date().toISOString().slice(0, 10)
+  const filename = `测试_${tableType}数据_${dateStr}`
+  
+  downloadExcel(testData, filename)
+}
+
 // 暴露给父组件的方法
 defineExpose({
   refreshTable,
   addCoin,
+  getTableData,
   deleteCoin,
   scrollToRightMost
 })
@@ -1104,6 +1326,21 @@ onMounted(async () => {
 /* 隐藏输入框的+-按钮 */
 :deep(.n-input-number .n-input-number-suffix) {
   display: none !important;
+}
+
+/* 固定列样式 */
+:deep(.n-data-table .n-data-table-th[data-col-key="selection"]) {
+  position: sticky !important;
+  left: 0 !important;
+  z-index: 10 !important;
+  background: var(--n-th-color) !important;
+}
+
+:deep(.n-data-table .n-data-table-td[data-col-key="selection"]) {
+  position: sticky !important;
+  left: 0 !important;
+  z-index: 10 !important;
+  background: var(--n-td-color) !important;
 }
 
 :deep(.n-input-number .n-input-number-prefix) {
