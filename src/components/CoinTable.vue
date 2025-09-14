@@ -31,14 +31,14 @@
         导出选中数据 ({{ selectedRowKeys.length }})
       </n-button>
       
-      <!-- 测试导出按钮 -->
+      <!-- 导出今日全部数据按钮 -->
       <n-button 
         type="info" 
         size="small" 
-        @click="testExport"
+        @click="exportTodayAllData"
         style="margin-left: 8px;"
       >
-        测试导出
+        导出今日全部数据
       </n-button>
     </div>
     
@@ -456,6 +456,131 @@ async function fetchCoinInfo(coin) {
   }
 }
 
+// 加载新币的历史数据（从添加时间点往前1小时）
+async function loadNewCoinHistoricalData(row) {
+  try {
+    console.log(`开始加载币种 ${row.coin} 的历史数据...`)
+    
+    const endpoint = props.apiPrefix ? 
+      `${import.meta.env.VITE_API_BASE}${props.apiPrefix}/pool/persistent_data/${row.coin}` :
+      `${import.meta.env.VITE_API_BASE}/pool/persistent_data/${row.coin}`
+    
+    const response = await axios.get(endpoint)
+    const data = response.data
+    
+    if (data && data.series && Array.isArray(data.series)) {
+      console.log(`获取到 ${row.coin} 的历史数据:`, data.series.length, '条记录')
+      
+      // 计算1小时前的时间点
+      const now = new Date()
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
+      
+      // 过滤出最近1小时的数据
+      const recentData = data.series.filter(([timestamp, price]) => {
+        // 假设时间戳格式为 "HH:mm:ss" 或 "LHH:mm:ss"
+        const timeStr = timestamp.replace(/^L/, '')
+        const [hours, minutes, seconds] = timeStr.split(':').map(Number)
+        const dataTime = new Date()
+        dataTime.setHours(hours, minutes, seconds, 0)
+        
+        // 如果数据时间在今天且在1小时内
+        return dataTime >= oneHourAgo && dataTime <= now
+      })
+      
+      console.log(`过滤后 ${row.coin} 的最近1小时数据:`, recentData.length, '条记录')
+      
+      // 将历史数据填充到行中
+      recentData.forEach(([timestamp, price]) => {
+        // 确保时间戳在 timeColumns 中
+        if (!timeColumns.value.includes(timestamp)) {
+          timeColumns.value.push(timestamp)
+        }
+        
+        // 填充数据
+        if (!row._rawByTime) row._rawByTime = {}
+        row._rawByTime[timestamp] = price
+        row[timestamp] = formatDisplayNumber(price)
+      })
+      
+      // 重新构建列定义以包含新的时间列
+      await rebuildColumnsWithTimeData()
+      
+      console.log(`币种 ${row.coin} 历史数据加载完成`)
+    }
+  } catch (error) {
+    console.error(`加载币种 ${row.coin} 历史数据失败:`, error)
+  }
+}
+
+// 重新构建列定义以包含时间数据
+async function rebuildColumnsWithTimeData() {
+  // 按时间排序
+  const sortedTimes = [...timeColumns.value].sort()
+  timeColumns.value = sortedTimes
+  
+  // 重建列定义
+  const newColumns = [
+    selectionColumn, // 添加选择列
+    {
+      title: '币种',
+      key: 'coin',
+      fixed: 'left',
+      width: CELL_WIDTH * 1.5, // 105px
+      sorter: (rowA, rowB) => {
+        const percentA = typeof rowA._changePercent === 'number' && isFinite(rowA._changePercent) ? rowA._changePercent : 0
+        const percentB = typeof rowB._changePercent === 'number' && isFinite(rowB._changePercent) ? rowB._changePercent : 0
+        return percentB - percentA // 降序排列，涨幅大的在前
+      },
+      render: (row) => {
+        const pct = typeof row._changePercent === 'number' && isFinite(row._changePercent)
+          ? row._changePercent
+          : null
+        
+        const changePercentElement = pct !== null ? (() => {
+          const color = pct >= 0 ? '#16a34a' : '#dc2626'
+          return h('span', { style: { color, fontWeight: 'bold' } }, `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`)
+        })() : h('span', { style: { color: '#6b7280' } }, '--')
+        
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, [
+          h('span', { style: { fontWeight: 'bold' } }, row.coin),
+          changePercentElement
+        ])
+      }
+    }
+  ]
+  
+  // 添加时间列
+  sortedTimes.forEach(time => {
+    newColumns.push({
+      title: time,
+      key: time,
+      width: CELL_WIDTH,
+      render: (row) => {
+        const cellStyle = getCellColor(row, time, false) // 历史数据，不触发警告
+        
+        // 确保显示值不为 undefined
+        const displayValue = row[time] !== undefined ? row[time] : '0'
+        const rawValue = row._rawByTime && row._rawByTime[time] !== undefined ? row._rawByTime[time] : 0
+        
+        return h(
+          NTooltip,
+          { placement: 'top' },
+          {
+            trigger: () => h('span', { style: cellStyle }, displayValue),
+            default: () => formatWithSeparators(rawValue)
+          }
+        )
+      }
+    })
+  })
+  
+  // 添加阈值列和操作列
+  newColumns.push(thresholdsColumn, actionColumn)
+  
+  columns.value = newColumns
+  updateScrollX()
+}
+
 // 从后端池获取当前币列表
 async function fetchPoolCoins() {
   try {
@@ -828,6 +953,9 @@ async function addCoin(value) {
         })
         tableData.push(newRow)
         
+        // 查询新币的历史数据（从添加时间点往前1小时）
+        await loadNewCoinHistoricalData(newRow)
+        
         // 标记为需要重新加载的币种
         newRow._needsReload = true
         
@@ -1184,28 +1312,51 @@ function downloadExcel(data, filename) {
   }
 }
 
-// 测试导出功能
-function testExport() {
-  console.log('=== 测试导出功能 ===')
-  console.log('当前选中键:', selectedRowKeys.value)
-  console.log('表格数据:', tableData.value)
-  console.log('时间列:', timeColumns.value)
-  
-  // 创建测试数据
-  const testData = [
-    ['币种', '2024-01-15 10:00', '2024-01-15 10:05'],
-    ['BTC', 235, 240],
-    ['ETH', 1200, 1180]
-  ]
-  
-  console.log('测试数据:', testData)
-  
-  // 直接测试下载
-  const tableType = props.apiPrefix === '/admin' ? '管理员' : '普通用户'
-  const dateStr = new Date().toISOString().slice(0, 10)
-  const filename = `测试_${tableType}数据_${dateStr}`
-  
-  downloadExcel(testData, filename)
+// 导出今日全部数据
+async function exportTodayAllData() {
+  try {
+    console.log('开始导出今日全部数据...')
+    
+    // 构建请求 URL
+    const endpoint = props.apiPrefix ? 
+      `${import.meta.env.VITE_API_BASE}${props.apiPrefix}/pool/export/excel` :
+      `${import.meta.env.VITE_API_BASE}/pool/export/excel`
+    
+    console.log('请求 URL:', endpoint)
+    
+    // 发送 GET 请求下载文件
+    const response = await axios.get(endpoint, {
+      responseType: 'blob' // 重要：指定响应类型为 blob
+    })
+    
+    // 创建下载链接
+    const blob = new Blob([response.data], { 
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+    })
+    const url = window.URL.createObjectURL(blob)
+    
+    // 创建下载链接并触发下载
+    const link = document.createElement('a')
+    link.href = url
+    
+    // 生成文件名
+    const tableType = props.apiPrefix === '/admin' ? '管理员' : '普通用户'
+    const dateStr = new Date().toISOString().slice(0, 10)
+    const filename = `${tableType}今日数据_${dateStr}.xlsx`
+    
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    
+    // 清理
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
+    console.log('文件下载成功:', filename)
+  } catch (error) {
+    console.error('导出今日全部数据失败:', error)
+    // 可以添加用户提示
+  }
 }
 
 // 暴露给父组件的方法

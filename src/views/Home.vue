@@ -2,7 +2,7 @@
   <n-layout>
     <n-layout-header class="header-container">
       <div class="header-content">
-        <h2 class="header-title">动态表格 V3</h2>
+        <h2 class="header-title">动态表格 V4.0</h2>
         
       <!-- 操作按钮组 -->
       <div class="header-actions">
@@ -25,8 +25,34 @@
       </div>
     </n-layout-header>
     
-    <n-layout-content style="padding: 16px">
-      <!-- 普通用户表格 -->
+     <n-layout-content style="padding: 16px">
+      <!-- 管理员模式：显示两个tab -->
+      <div v-if="isAdminMode">
+        <n-tabs type="line" animated>
+          <!-- 管理员表格 Tab -->
+          <n-tab-pane name="admin-table" tab="管理员表格">
+            <div class="tab-content">
+              <h3 style="color: #1890ff; margin-bottom: 16px;">管理员面板</h3>
+              <CoinTable 
+                ref="adminTableRef"
+                api-prefix="/admin"
+                @coin-added="onAdminCoinAdded"
+                @notification-added="onNotificationAdded"
+              />
+            </div>
+          </n-tab-pane>
+
+          <!-- 用户管理 Tab -->
+          <n-tab-pane name="user-management" tab="用户管理">
+            <div class="tab-content">
+              <h3 style="color: #1890ff; margin-bottom: 16px;">用户管理</h3>
+              <UserManagement />
+            </div>
+          </n-tab-pane>
+        </n-tabs>
+      </div>
+
+      <!-- 普通用户模式：只显示表格 -->
       <div>
         <CoinTable 
           ref="coinTableRef"
@@ -35,17 +61,6 @@
           @notification-added="onNotificationAdded"
         />
       </div>
-      
-      <!-- 管理员表格 -->
-      <div v-if="isAdminMode" style="margin-top: 32px;">
-        <h3 style="color: #1890ff; margin-bottom: 16px;">管理员面板</h3>
-        <CoinTable 
-          ref="adminTableRef"
-          api-prefix="/admin"
-          @coin-added="onAdminCoinAdded"
-          @notification-added="onNotificationAdded"
-        />
-        </div>
     </n-layout-content>
     
     <!-- 通知抽屉 -->
@@ -127,8 +142,9 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { NButton, NIcon, NBadge, NDrawer, NDrawerContent, NEmpty } from 'naive-ui'
+import { NButton, NIcon, NBadge, NDrawer, NDrawerContent, NEmpty, NTabs, NTabPane } from 'naive-ui'
 import CoinTable from '../components/CoinTable.vue'
+import UserManagement from '../components/UserManagement.vue'
 
 const coinTableRef = ref(null)
 const adminTableRef = ref(null)
@@ -261,6 +277,11 @@ function markAllAsRead() {
 
 .notification-icon:hover {
   transform: scale(1.1);
+}
+
+/* Tab content styles */
+.tab-content {
+  padding: 16px 0;
 }
 
 .drawer-content {
