@@ -2,7 +2,7 @@
   <n-layout>
     <n-layout-header class="header-container">
       <div class="header-content">
-        <h2 class="header-title">动态表格 V4.0</h2>
+        <h6 class="header-title">动态表格 V4.0</h6>
         
       <!-- 操作按钮组 -->
       <div class="header-actions">

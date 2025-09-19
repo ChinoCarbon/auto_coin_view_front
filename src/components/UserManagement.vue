@@ -128,10 +128,24 @@
                         </div>
             
                         <div class="pnl-info">
-                          <span class="pnl-value" :class="position.unrealizedPnl >= 0 ? 'positive' : 'negative'">
+                          <span 
+                            class="pnl-value" 
+                            :class="{
+                              'positive': position.unrealizedPnl >= 0, 
+                              'negative': position.unrealizedPnl < 0,
+                              'highlight': position._highlightProfit
+                            }"
+                          >
                             {{ position.unrealizedPnl >= 0 ? '+' : '' }}${{ position.unrealizedPnl.toFixed(2) }}
                           </span>
-                          <span class="pnl-percentage" :class="position.percentage >= 0 ? 'positive' : 'negative'">
+                          <span 
+                            class="pnl-percentage" 
+                            :class="{
+                              'positive': position.percentage >= 0, 
+                              'negative': position.percentage < 0,
+                              'highlight': position._highlightPercentage
+                            }"
+                          >
                             {{ position.percentage >= 0 ? '+' : '' }}{{ position.percentage.toFixed(2) }}%
                           </span>
                         </div>
@@ -186,7 +200,7 @@
                           <span class="order-qty">数量: {{ order.origQty.toFixed(6) }}</span>
                         </div>
                         <div v-if="order.stopPrice > 0" class="stop-price-info">
-                          <span class="stop-price">止损价: ${{ order.stopPrice.toFixed(6) }}</span>
+                          <span class="stop-price">限价: ${{ order.stopPrice.toFixed(6) }}</span>
                         </div>
                         <div class="status-time-info">
                           <span class="order-status" :class="order.status.toLowerCase()">
@@ -239,35 +253,34 @@
         <n-form-item label="交易对">
           <n-select 
             v-model:value="batchOrderForm.symbol" 
-            placeholder="选择交易对"
+            placeholder="搜索或选择交易对"
             :options="availableSymbols"
+            :loading="symbolsLoading"
+            filterable
+            clearable
             @update:value="onSymbolChange"
+            @search="onSymbolSearch"
           />
+          <div v-if="symbolsLoading" class="loading-text">正在加载交易对列表...</div>
         </n-form-item>
         
-        <n-form-item v-if="batchOrderForm.symbol && symbolInfo.symbol" label="交易对信息">
+        <n-form-item v-if="batchOrderForm.symbol && maxLeverage > 1" label="交易对信息">
           <div class="symbol-info">
             <div class="info-row">
+              <span class="info-label">交易对:</span>
+              <span class="info-value">{{ batchOrderForm.symbol }}</span>
+            </div>
+            <div class="info-row">
               <span class="info-label">最大杠杆:</span>
-              <span class="info-value">{{ symbolInfo.maxLeverage }}x</span>
+              <span class="info-value">{{ maxLeverage }}x</span>
             </div>
             <div class="info-row">
-              <span class="info-label">最小下单量(币):</span>
-              <span class="info-value">{{ symbolInfo.minQuantityByNotional }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">最小下单量(USDT):</span>
-              <span class="info-value">${{ symbolInfo.minQuantityUSDT }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">价格精度:</span>
-              <span class="info-value">{{ symbolInfo.tickSize }}</span>
+              <span class="info-label">合约类型:</span>
+              <span class="info-value">永续合约</span>
             </div>
             <div class="info-row">
               <span class="info-label">状态:</span>
-              <span class="info-value" :class="symbolInfo.status === 'TRADING' ? 'status-trading' : 'status-other'">
-                {{ symbolInfo.status === 'TRADING' ? '交易中' : symbolInfo.status }}
-              </span>
+              <span class="info-value status-trading">交易中</span>
             </div>
           </div>
         </n-form-item>
@@ -277,6 +290,22 @@
             <n-radio value="BUY">开多</n-radio>
             <n-radio value="SELL">开空</n-radio>
           </n-radio-group>
+        </n-form-item>
+        
+        <n-form-item label="订单类型">
+          <n-radio-group v-model:value="batchOrderForm.orderType">
+            <n-radio value="MARKET">市价单</n-radio>
+            <n-radio value="LIMIT">限价单</n-radio>
+          </n-radio-group>
+        </n-form-item>
+        
+        <n-form-item v-if="batchOrderForm.orderType === 'LIMIT'" label="限价价格">
+          <n-input-number 
+            v-model:value="batchOrderForm.price" 
+            :min="0.000001"
+            :precision="6"
+            placeholder="输入限价价格"
+          />
         </n-form-item>
         
         <n-form-item label="杠杆倍数">
@@ -289,18 +318,18 @@
           <span class="form-tip">范围: 1x - {{ maxLeverage }}x</span>
         </n-form-item>
         
-        <n-form-item label="仓位百分比">
+        <n-form-item label="USDT金额">
           <n-input-number 
-            v-model:value="batchOrderForm.percentage" 
-            :min="1" 
-            :max="100"
-            placeholder="占全仓百分比"
+            v-model:value="batchOrderForm.usdtAmount" 
+            :min="1"
+            :precision="2"
+            placeholder="输入USDT金额"
           />
-          <span class="form-tip">%</span>
+          <span class="form-tip">USDT</span>
         </n-form-item>
         
         <n-alert type="info" style="margin-bottom: 16px;">
-          实际持仓量 = 全仓资金 × 仓位百分比 × 杠杆倍数
+          每个用户将使用相同的USDT金额和交易参数进行下单
         </n-alert>
         
         <n-form-item v-if="selectedUsers.length > 0" label="下单预览">
@@ -311,8 +340,11 @@
               class="preview-item"
             >
               <span class="user-name">{{ users.find(u => u.id === userId)?.alias }}</span>
-              <span class="amount">
-                ${{ ((users.find(u => u.id === userId)?.availableBalance || 0) * batchOrderForm.percentage / 100).toFixed(2) }}
+              <span class="order-details">
+                {{ batchOrderForm.symbol }} {{ batchOrderForm.side === 'BUY' ? '开多' : '开空' }} 
+                ${{ batchOrderForm.usdtAmount }} USDT
+                @ {{ batchOrderForm.orderType === 'MARKET' ? '市价' : batchOrderForm.price }}
+                ({{ batchOrderForm.leverage }}x)
               </span>
             </div>
           </div>
@@ -376,8 +408,10 @@ const selectedUsers = ref([])
 const batchOrderForm = ref({
   symbol: '',
   side: 'BUY',
+  orderType: 'MARKET',
+  price: null,
   leverage: 1,
-  percentage: 10,
+  usdtAmount: 100,
   takeProfitPrice: null,
   stopLossPrice: null
 })
@@ -387,6 +421,7 @@ const maxLeverage = ref(1)
 const minQuantityByNotional = ref(0.001)
 const minQuantityUSDT = ref(10)
 const tickSize = ref(0.1)
+const symbolsLoading = ref(false)
 
 // 获取用户列表
 async function fetchUsers() {
@@ -766,14 +801,20 @@ async function fetchAllOrders() {
 
 // WebSocket连接管理
 let wsConnection = null
+let wsHeartbeatInterval = null
+let wsLastMessageTime = 0
 
 // 更新仓位价格
 function updatePositionPrices(symbol, currentPrice) {
+  console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
   let hasUpdate = false
+  let foundPositions = 0
   
   users.value.forEach(user => {
     user.positions.forEach((position, index) => {
       if (position.symbol === symbol) {
+        foundPositions++
+        console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
         // 获取原始数据（从API获取的固定数据，刷新时更新）
         const originalEntryPrice = position.originalEntryPrice || position.entryPrice
         const originalAmount = position.amount
@@ -825,6 +866,10 @@ function updatePositionPrices(symbol, currentPrice) {
            }
         }
         
+        // 检查数值是否发生变化，添加高亮效果
+        const profitChanged = Math.abs(position.unrealizedPnl - newUnrealizedPnl) > 0.01
+        const percentageChanged = Math.abs(position.percentage - newPercentage) > 0.01
+        
         // 使用Vue的响应式更新方式
         user.positions[index] = {
           ...position,
@@ -834,7 +879,20 @@ function updatePositionPrices(symbol, currentPrice) {
           percentage: newPercentage,
           notional: newNotional,
           margin: newMargin,
-          leverage: newLeverage
+          leverage: newLeverage,
+          // 添加高亮标记
+          _highlightProfit: profitChanged,
+          _highlightPercentage: percentageChanged
+        }
+        
+        // 清除高亮效果（1秒后）
+        if (profitChanged || percentageChanged) {
+          setTimeout(() => {
+            if (user.positions[index]) {
+              user.positions[index]._highlightProfit = false
+              user.positions[index]._highlightPercentage = false
+            }
+          }, 1000)
         }
         
         hasUpdate = true
@@ -850,16 +908,24 @@ function updatePositionPrices(symbol, currentPrice) {
     })
   })
   
+  console.log(`📊 价格更新总结: 找到 ${foundPositions} 个匹配仓位，更新了 ${hasUpdate ? '是' : '否'}`)
+  
   // 强制触发响应式更新
   if (hasUpdate) {
     // 触发Vue的响应式更新
     users.value = [...users.value]
+    console.log('🔄 已触发Vue响应式更新')
   }
 }
 
 // 启动WebSocket价格订阅
 function startWebSocketSubscription() {
+  console.log('🔄 开始启动WebSocket连接...')
+  console.log('📊 当前用户数量:', users.value.length)
+  console.log('📊 当前仓位数量:', users.value.reduce((total, user) => total + user.positions.length, 0))
+  
   if (wsConnection) {
+    console.log('🔌 关闭现有WebSocket连接')
     wsConnection.close()
   }
   
@@ -873,8 +939,10 @@ function startWebSocketSubscription() {
     })
   })
   
+  console.log('🎯 需要监控的交易对:', Array.from(symbols))
+  
   if (symbols.size === 0) {
-    console.log('没有需要订阅的交易对')
+    console.log('⚠️ 没有需要订阅的交易对，跳过WebSocket连接')
     return
   }
   
@@ -882,43 +950,81 @@ function startWebSocketSubscription() {
   wsConnection = new WebSocket('wss://fstream.binance.com/ws/!ticker@arr')
   
   wsConnection.onopen = () => {
-    console.log('WebSocket连接已建立，订阅全市场ticker')
-    console.log('需要监控的交易对:', Array.from(symbols))
+    console.log('✅ WebSocket连接已建立，订阅全市场ticker')
+    console.log('📈 开始接收实时价格数据...')
+    console.log('🎯 需要监控的交易对:', Array.from(symbols))
+    
+    // 启动心跳检测
+    startHeartbeat()
   }
   
   wsConnection.onmessage = (event) => {
+    // 更新最后接收消息时间
+    wsLastMessageTime = Date.now()
+    
     try {
       const data = JSON.parse(event.data)
+      console.log('📨 收到WebSocket数据，包含', data.length, '个交易对')
+      
       if (Array.isArray(data)) {
-        // 处理ticker数据，只更新我们需要的交易对
+        let processedCount = 0
+        let relevantCount = 0
+        
         data.forEach(ticker => {
-          if (ticker.s && ticker.c && symbols.has(ticker.s.toLowerCase())) {
-            updatePositionPrices(ticker.s, parseFloat(ticker.c))
+          if (ticker.s && ticker.c) {
+            const symbol = ticker.s.toLowerCase()
+            if (symbols.has(symbol)) {
+              const price = parseFloat(ticker.c)
+              console.log(`💰 处理相关价格: ${ticker.s} = $${price}`)
+              updatePositionPrices(ticker.s, price)
+              processedCount++
+            }
+            relevantCount++
           }
         })
+        
+        console.log(`✅ 处理了 ${processedCount} 个相关价格，总共 ${relevantCount} 个有效价格`)
+      } else {
+        console.log('⚠️ 收到非数组数据:', typeof data, data)
       }
     } catch (error) {
-      console.error('WebSocket消息解析错误:', error)
+      console.error('❌ WebSocket消息解析错误:', error)
+      console.error('原始数据长度:', event.data?.length)
+      console.error('原始数据前100字符:', event.data?.substring(0, 100))
     }
   }
   
-  wsConnection.onclose = () => {
-    console.log('WebSocket连接已关闭')
+  wsConnection.onclose = (event) => {
+    console.log('🔌 WebSocket连接已关闭')
+    console.log('关闭代码:', event.code)
+    console.log('关闭原因:', event.reason)
+    console.log('是否正常关闭:', event.wasClean)
+    
+    // 停止心跳检测
+    stopHeartbeat()
+    
     // 5秒后重连
     setTimeout(() => {
       if (autoRefresh.value) {
+        console.log('🔄 尝试重新连接WebSocket...')
         startWebSocketSubscription()
+      } else {
+        console.log('⏸️ 自动刷新已关闭，跳过重连')
       }
     }, 5000)
   }
   
   wsConnection.onerror = (error) => {
-    console.error('WebSocket错误:', error)
+    console.error('❌ WebSocket连接错误:', error)
+    console.error('错误类型:', error.type)
+    console.error('错误目标状态:', error.target?.readyState)
   }
 }
 
 // 自动刷新控制（现在只控制WebSocket）
 function startAutoRefresh() {
+  console.log('🔄 启动自动刷新，autoRefresh =', autoRefresh.value)
+  
   if (refreshInterval.value) {
     clearInterval(refreshInterval.value)
   }
@@ -926,7 +1032,81 @@ function startAutoRefresh() {
   if (autoRefresh.value) {
     // 启动WebSocket订阅
     startWebSocketSubscription()
-    console.log('开始WebSocket价格订阅')
+    console.log('✅ 开始WebSocket价格订阅')
+  } else {
+    console.log('⏸️ 自动刷新已关闭')
+  }
+}
+
+// 启动心跳检测
+function startHeartbeat() {
+  console.log('💓 启动WebSocket心跳检测...')
+  wsLastMessageTime = Date.now()
+  
+  if (wsHeartbeatInterval) {
+    clearInterval(wsHeartbeatInterval)
+  }
+  
+  wsHeartbeatInterval = setInterval(() => {
+    const now = Date.now()
+    const timeSinceLastMessage = now - wsLastMessageTime
+    
+    console.log(`💓 心跳检测: 距离上次消息 ${Math.round(timeSinceLastMessage / 1000)} 秒`)
+    
+    // 如果超过30秒没有收到消息，认为连接已断开
+    if (timeSinceLastMessage > 30000) {
+      console.log('⚠️ WebSocket连接可能已过期，超过30秒未收到消息')
+      console.log('🔄 主动关闭并重新连接...')
+      
+      if (wsConnection) {
+        wsConnection.close()
+      }
+      
+      // 立即重连
+      if (autoRefresh.value) {
+        startWebSocketSubscription()
+      }
+    }
+    
+    // 检查连接状态
+    if (wsConnection && wsConnection.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ WebSocket连接状态异常:', wsConnection.readyState)
+      console.log('🔄 重新连接...')
+      
+      if (autoRefresh.value) {
+        startWebSocketSubscription()
+      }
+    }
+  }, 10000) // 每10秒检查一次
+}
+
+// 停止心跳检测
+function stopHeartbeat() {
+  console.log('💔 停止WebSocket心跳检测')
+  if (wsHeartbeatInterval) {
+    clearInterval(wsHeartbeatInterval)
+    wsHeartbeatInterval = null
+  }
+}
+
+// 手动测试WebSocket连接
+function testWebSocketConnection() {
+  console.log('🧪 手动测试WebSocket连接...')
+  console.log('当前WebSocket状态:', wsConnection?.readyState)
+  console.log('WebSocket状态码: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED')
+  console.log('距离上次消息:', Math.round((Date.now() - wsLastMessageTime) / 1000), '秒')
+  
+  if (wsConnection) {
+    console.log('当前连接状态:', wsConnection.readyState)
+    if (wsConnection.readyState === WebSocket.OPEN) {
+      console.log('✅ WebSocket连接正常')
+    } else {
+      console.log('❌ WebSocket连接异常，尝试重新连接...')
+      startWebSocketSubscription()
+    }
+  } else {
+    console.log('❌ 没有WebSocket连接，尝试创建...')
+    startWebSocketSubscription()
   }
 }
 
@@ -992,49 +1172,101 @@ function openBatchOrderModal() {
   loadAvailableSymbols()
 }
 
-function loadAvailableSymbols() {
-  // 从现有仓位数据中提取交易对
-  const symbols = new Set()
-  users.value.forEach(user => {
-    if (user.positions) {
-      user.positions.forEach(position => {
-        symbols.add(position.symbol)
-      })
+async function loadAvailableSymbols() {
+  try {
+    symbolsLoading.value = true
+    console.log('开始加载交易对列表...')
+    
+    const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/symbols/usdt`)
+    console.log('交易对列表响应:', response.data)
+    
+    if (response.data && response.data.success && response.data.data) {
+      const { symbols, symbols_detail } = response.data.data
+      
+      // 按字典序排序
+      const sortedSymbols = symbols.sort()
+      
+      // 转换为选项格式
+      availableSymbols.value = sortedSymbols.map(symbol => ({
+        label: symbol,
+        value: symbol
+      }))
+      
+      console.log(`加载了 ${availableSymbols.value.length} 个交易对`)
+    } else {
+      console.warn('交易对数据格式不正确:', response.data)
+      availableSymbols.value = []
     }
-  })
-  availableSymbols.value = Array.from(symbols).map(symbol => ({
-    label: symbol,
-    value: symbol
-  }))
+  } catch (error) {
+    console.error('获取交易对列表失败:', error)
+    availableSymbols.value = []
+  } finally {
+    symbolsLoading.value = false
+  }
+}
+
+// 交易对搜索功能
+async function onSymbolSearch(query) {
+  if (!query || query.length < 2) {
+    return
+  }
+  
+  try {
+    symbolsLoading.value = true
+    console.log(`搜索交易对: ${query}`)
+    
+    const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/symbols/usdt`, {
+      params: { search: query }
+    })
+    
+    if (response.data && response.data.success && response.data.data) {
+      const { symbols } = response.data.data
+      
+      // 按字典序排序
+      const sortedSymbols = symbols.sort()
+      
+      // 转换为选项格式
+      availableSymbols.value = sortedSymbols.map(symbol => ({
+        label: symbol,
+        value: symbol
+      }))
+      
+      console.log(`搜索到 ${availableSymbols.value.length} 个匹配的交易对`)
+    }
+  } catch (error) {
+    console.error('搜索交易对失败:', error)
+  } finally {
+    symbolsLoading.value = false
+  }
 }
 
 async function onSymbolChange(symbol) {
   if (symbol) {
     try {
-      // 查询该交易对的详细信息
-      const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/symbol/info/${symbol}`)
+      // 查询该交易对的杠杆信息
+      const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/leverage/symbol/${symbol}`)
       if (response.data && response.data.success) {
         const info = response.data.data
-        symbolInfo.value = info
         
-        // 更新相关限制
-        maxLeverage.value = info.maxLeverage || 1
-        minQuantityByNotional.value = info.minQuantityByNotional || 0.001
-        minQuantityUSDT.value = info.minQuantityUSDT || 10
-        tickSize.value = info.tickSize || 0.1
+        // 更新杠杆限制
+        maxLeverage.value = info.max_leverage || 1
         
         // 调整当前杠杆不超过最大值
         batchOrderForm.value.leverage = Math.min(batchOrderForm.value.leverage, maxLeverage.value)
         
-        console.log(`${symbol} 交易对信息:`, info)
+        console.log(`${symbol} 杠杆信息:`, {
+          symbol: info.symbol,
+          maxLeverage: info.max_leverage,
+          baseAsset: info.base_asset,
+          quoteAsset: info.quote_asset,
+          contractType: info.contract_type,
+          status: info.status
+        })
       }
     } catch (error) {
-      console.error('获取交易对信息失败:', error)
+      console.error('获取杠杆信息失败:', error)
       // 重置为默认值
       maxLeverage.value = 1
-      minQuantityByNotional.value = 0.001
-      minQuantityUSDT.value = 10
-      tickSize.value = 0.1
     }
   }
 }
@@ -1050,71 +1282,52 @@ async function submitBatchOrder() {
     return
   }
   
-  if (!batchOrderForm.value.percentage || batchOrderForm.value.percentage <= 0) {
-    alert('请输入有效的仓位百分比')
+  if (!batchOrderForm.value.usdtAmount || batchOrderForm.value.usdtAmount <= 0) {
+    alert('请输入有效的USDT金额')
     return
   }
   
-  // 验证每个用户的下单量是否满足最小USDT要求
-  const invalidUsers = []
-  selectedUsers.value.forEach(userId => {
-    const user = users.value.find(u => u.id === userId)
-    if (user && user.availableBalance) {
-      const usdtAmount = user.availableBalance * batchOrderForm.value.percentage / 100
-      if (usdtAmount < minQuantityUSDT.value) {
-        invalidUsers.push(`${user.alias}($${usdtAmount.toFixed(2)})`)
-      }
-    }
-  })
-  
-  if (invalidUsers.length > 0) {
-    alert(`以下用户下单金额小于最小要求($${minQuantityUSDT.value}): ${invalidUsers.join(', ')}`)
+  if (batchOrderForm.value.orderType === 'LIMIT' && (!batchOrderForm.value.price || batchOrderForm.value.price <= 0)) {
+    alert('限价单必须设置价格')
     return
   }
   
   try {
     batchOrderLoading.value = true
     
-    // 为每个用户计算具体的下单量
-    const userOrders = selectedUsers.value.map(userId => {
+    // 为每个用户创建订单
+    const orderPromises = selectedUsers.value.map(async (userId) => {
       const user = users.value.find(u => u.id === userId)
-      if (!user || !user.availableBalance) {
-        return {
-          user_id: userId,
-          usdt_amount: 0
-        }
+      if (!user) {
+        throw new Error(`用户 ${userId} 不存在`)
       }
       
-      // 计算该用户的下单量：可用余额 × 百分比
-      const usdtAmount = (user.availableBalance * batchOrderForm.value.percentage / 100).toFixed(2)
-      
-      return {
-        user_id: userId,
-        usdt_amount: parseFloat(usdtAmount)
-      }
-    })
-    
-    // 发送多个独立的订单请求，每个用户一个请求
-    const orderPromises = userOrders.map(async (userOrder) => {
-      const requestData = {
-        user_ids: [userOrder.user_id],
+      // 构建订单数据
+      const orderData = {
         symbol: batchOrderForm.value.symbol,
         side: batchOrderForm.value.side,
-        usdt_amount: userOrder.usdt_amount,
-        leverage: batchOrderForm.value.leverage
+        quantity: batchOrderForm.value.usdtAmount, // USDT金额放到quantity字段
+        leverage: batchOrderForm.value.leverage,
+        order_type: batchOrderForm.value.orderType,
+        price: batchOrderForm.value.orderType === 'LIMIT' ? batchOrderForm.value.price : null
       }
       
       // 添加止盈止损价格（如果设置了）
       if (batchOrderForm.value.takeProfitPrice) {
-        requestData.take_profit_price = batchOrderForm.value.takeProfitPrice
+        orderData.take_profit_price = batchOrderForm.value.takeProfitPrice
       }
       if (batchOrderForm.value.stopLossPrice) {
-        requestData.stop_loss_price = batchOrderForm.value.stopLossPrice
+        orderData.stop_loss_price = batchOrderForm.value.stopLossPrice
       }
       
-      console.log(`用户 ${userOrder.user_id} 下单请求:`, requestData)
+      const requestData = {
+        user_id: userId,
+        orders: [orderData]
+      }
       
-      return axios.post(`${import.meta.env.VITE_API_TRADE}/api/batch/orders`, requestData)
+      console.log(`用户 ${user.alias} 下单请求:`, requestData)
+      
+      return axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/batch`, requestData)
     })
     
     // 等待所有订单请求完成
@@ -1126,36 +1339,53 @@ async function submitBatchOrder() {
     let successCount = 0
     let failedCount = 0
     const failedUsers = []
+    const successDetails = []
     
     results.forEach((result, index) => {
+      const userId = selectedUsers.value[index]
+      const user = users.value.find(u => u.id === userId)
+      
       if (result.status === 'fulfilled' && result.value.data && result.value.data.success) {
         successCount++
+        successDetails.push({
+          user: user?.alias || `用户${index + 1}`,
+          data: result.value.data
+        })
       } else {
         failedCount++
-        const user = users.value.find(u => u.id === userOrders[index].user_id)
-        failedUsers.push(user?.alias || `用户${index + 1}`)
+        failedUsers.push({
+          user: user?.alias || `用户${index + 1}`,
+          error: result.status === 'rejected' ? result.reason?.response?.data?.message || result.reason?.message : '未知错误'
+        })
       }
     })
     
-    if (successCount > 0) {
-      let message = `批量下单完成！成功: ${successCount}个`
-      if (failedCount > 0) {
-        message += `，失败: ${failedCount}个`
-        if (failedUsers.length > 0) {
-          message += `\n失败用户: ${failedUsers.join(', ')}`
-        }
-      }
-      alert(message)
-      showBatchOrderModal.value = false
-      // 刷新数据
-      await fetchAllPositions()
-      await fetchAllOrders()
-    } else {
-      alert('批量下单失败: 所有用户下单都失败了')
+    // 显示详细结果
+    let resultMessage = `批量下单完成！\n成功: ${successCount}个，失败: ${failedCount}个\n\n`
+    
+    if (successDetails.length > 0) {
+      resultMessage += '成功详情:\n'
+      successDetails.forEach(detail => {
+        resultMessage += `• ${detail.user}: ${detail.data.total_orders}个订单，成功${detail.data.successful_orders}个\n`
+      })
     }
+    
+    if (failedUsers.length > 0) {
+      resultMessage += '\n失败详情:\n'
+      failedUsers.forEach(failed => {
+        resultMessage += `• ${failed.user}: ${failed.error}\n`
+      })
+    }
+    
+    alert(resultMessage)
+    
+    // 关闭弹窗并刷新数据
+    showBatchOrderModal.value = false
+    await forceRefresh()
+    
   } catch (error) {
     console.error('批量下单失败:', error)
-    alert('批量下单失败: ' + error.message)
+    alert('批量下单失败: ' + (error.response?.data?.message || error.message))
   } finally {
     batchOrderLoading.value = false
   }
@@ -1174,6 +1404,7 @@ onMounted(async () => {
 // 组件卸载时清理定时器
 onUnmounted(() => {
   stopAutoRefresh()
+  stopHeartbeat()
   if (wsConnection) {
     wsConnection.close()
     wsConnection = null
@@ -1463,6 +1694,31 @@ watch(autoRefresh, (newValue) => {
 .pnl-percentage {
   font-weight: 600;
   font-size: 20px;
+  transition: all 0.3s ease;
+}
+
+.pnl-value.highlight,
+.pnl-percentage.highlight {
+  background: #fbbf24;
+  color: #92400e;
+  padding: 2px 6px;
+  border-radius: 4px;
+  animation: highlightPulse 1s ease-in-out;
+}
+
+@keyframes highlightPulse {
+  0% {
+    background: #fbbf24;
+    transform: scale(1);
+  }
+  50% {
+    background: #f59e0b;
+    transform: scale(1.05);
+  }
+  100% {
+    background: #fbbf24;
+    transform: scale(1);
+  }
 }
 
 .pnl-value.positive,
@@ -1735,5 +1991,24 @@ watch(autoRefresh, (newValue) => {
 
 .status-other {
   color: var(--n-color-warning);
+}
+
+.loading-text {
+  color: #666;
+  font-size: 12px;
+  margin-top: 4px;
+  text-align: center;
+}
+
+.order-details {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+  font-family: monospace;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: var(--n-text-color-3);
+  margin-left: 8px;
 }
 </style>
