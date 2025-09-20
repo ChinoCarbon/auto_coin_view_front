@@ -552,7 +552,7 @@ async function rebuildColumnsWithTimeData() {
   // 添加时间列
   sortedTimes.forEach(time => {
     newColumns.push({
-      title: time,
+      title: time.replace(/^[A-Z]/, ''), // 去掉字母前缀
       key: time,
       width: CELL_WIDTH,
       render: (row) => {
@@ -682,7 +682,7 @@ async function restoreHistoricalData() {
   // 添加时间列
   sortedTimes.forEach(time => {
     newColumns.push({
-      title: time,
+      title: time.replace(/^[A-Z]/, ''), // 去掉字母前缀
       key: time,
       width: CELL_WIDTH,
       render: (row) => {
@@ -824,7 +824,7 @@ async function refreshTable() {
   const sortedNewTimestamps = Array.from(newTimestamps).sort();
   sortedNewTimestamps.forEach(timestamp => {
     const newCol = {
-      title: timestamp,
+      title: timestamp.replace(/^[A-Z]/, ''), // 去掉字母前缀
       key: timestamp,
       width: CELL_WIDTH,
       render: (row) => {

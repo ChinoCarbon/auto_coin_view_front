@@ -115,11 +115,19 @@
                       class="position-item"
                     >
                       <div class="position-info">
-                        <span class="coin-name">{{ position.symbol }}</span>
-                        <span class="position-side" :class="position.side.toLowerCase()">
-                          {{ position.side === 'LONG' ? '多' : '空' }}
+                        <div class="position-left">
+                          <span class="coin-name">{{ position.symbol }}</span>
+                          <span class="position-side" :class="position.side.toLowerCase()">
+                            {{ position.side === 'LONG' ? '多' : '空' }}
+                          </span>
+                          <span class="leverage-badge">{{ position.leverage.toFixed(1) }}x</span>
+                        </div>
+                        <span v-if="position.liquidation_price_usdt && parseFloat(position.liquidation_price_usdt) > 0" class="liquidation-price">
+                          强平: ${{ parseFloat(position.liquidation_price_usdt).toFixed(4) }}
                         </span>
-                        <span class="leverage-badge">{{ position.leverage.toFixed(1) }}x</span>
+                        <span v-else-if="position.liquidation_price_usdt !== undefined" class="liquidation-price no-liquidation">
+                          无强平价
+                        </span>
                       </div>
                       <div class="position-details">
                         <div class="price-info">
@@ -155,6 +163,34 @@
                         
                         </div>
 
+                      </div>
+                      
+                      <!-- 仓位操作按钮 -->
+                      <div class="position-actions">
+                        <n-button 
+                          type="error" 
+                          size="small" 
+                          class="action-btn close-btn"
+                          @click="handleClosePosition(position)"
+                        >
+                          市价平仓
+                        </n-button>
+                        <n-button 
+                          type="warning" 
+                          size="small" 
+                          class="action-btn tp-sl-btn"
+                          @click="handleTpSl(position)"
+                        >
+                          止盈止损
+                        </n-button>
+                        <n-button 
+                          type="info" 
+                          size="small" 
+                          class="action-btn leverage-btn"
+                          @click="handleModifyLeverage(position)"
+                        >
+                          修改杠杆
+                        </n-button>
                       </div>
                     </div>
                   </div>
@@ -382,12 +418,205 @@
         </n-button>
       </template>
     </n-modal>
+    
+    <!-- 修改杠杆弹窗 -->
+    <n-modal v-model:show="modifyLeverageModal.show" :mask-closable="false">
+      <n-card
+        style="width: 500px; max-width: 90vw"
+        title="修改杠杆"
+        :bordered="false"
+        size="huge"
+        role="dialog"
+        aria-modal="true"
+      >
+        <template #header-extra>
+          <n-button quaternary circle @click="modifyLeverageModal.show = false">
+            ×
+          </n-button>
+        </template>
+        
+        <div class="modify-leverage-form">
+          <!-- 修改杠杆信息 -->
+          <div class="leverage-info">
+            <div class="title-main">{{ modifyLeverageModal.symbol }} {{ modifyLeverageModal.side === 'LONG' ? '多头' : '空头' }}</div>
+            <div class="title-sub">修改杠杆</div>
+            <p class="info-text">将为所有持有该币种且方向一致的用户修改杠杆倍数</p>
+          </div>
+          
+          <!-- 杠杆选择 -->
+          <div class="leverage-selector">
+            <n-form-item :label="`新杠杆倍数: ${modifyLeverageModal.newLeverage || 1}x`">
+              <n-slider
+                v-model:value="modifyLeverageModal.newLeverage"
+                :min="1"
+                :max="modifyLeverageModal.maxLeverage"
+                :step="1"
+                :marks="modifyLeverageModal.leverageMarks"
+                :tooltip="false"
+                @update:value="updateLeverageInfo"
+              />
+            </n-form-item>
+          </div>
+          
+          <!-- 用户列表 -->
+          <div class="users-list">
+            <h5>修改杠杆用户列表</h5>
+            <div class="users-container">
+              <div 
+                v-for="user in modifyLeverageModal.affectedUsers" 
+                :key="user.id"
+                class="user-item"
+              >
+                <div class="user-info">
+                  <span class="user-name">{{ user.alias }}</span>
+                  <span class="position-info">
+                    持仓: {{ user.position.amount.toFixed(6) }} {{ modifyLeverageModal.symbol.replace('USDT', '') }}
+                  </span>
+                </div>
+                <div class="leverage-info">
+                  <span class="current-leverage">
+                    当前杠杆: {{ user.position.leverage.toFixed(1) }}x
+                  </span>
+                  <span class="new-leverage">
+                    新杠杆: {{ modifyLeverageModal.newLeverage || '未选择' }}x
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 总计信息 -->
+          <div class="total-info">
+            <div class="total-item">
+              <span class="label">修改用户数:</span>
+              <span class="value">{{ modifyLeverageModal.affectedUsers.length }} 人</span>
+            </div>
+            <div class="total-item">
+              <span class="label">当前杠杆:</span>
+              <span class="value">{{ modifyLeverageModal.currentLeverage }}x</span>
+            </div>
+            <div class="total-item">
+              <span class="label">新杠杆:</span>
+              <span class="value">{{ modifyLeverageModal.newLeverage || '未选择' }}x</span>
+            </div>
+          </div>
+        </div>
+        
+        <template #action>
+          <div class="modal-actions">
+            <n-button @click="modifyLeverageModal.show = false">取消</n-button>
+            <n-button 
+              type="primary" 
+              :loading="modifyLeverageModal.loading"
+              :disabled="!modifyLeverageModal.newLeverage"
+              @click="confirmModifyLeverage"
+            >
+              确认修改
+            </n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
+    
+    <!-- 市价平仓弹窗 -->
+    <n-modal v-model:show="closePositionModal.show" :mask-closable="false">
+      <n-card
+        style="width: 600px; max-width: 90vw"
+        title="市价平仓"
+        :bordered="false"
+        size="huge"
+        role="dialog"
+        aria-modal="true"
+      >
+        <template #header-extra>
+          <n-button quaternary circle @click="closePositionModal.show = false">
+            ×
+          </n-button>
+        </template>
+        
+        <div class="close-position-form">
+          <!-- 平仓信息 -->
+          <div class="close-info">
+            <h4>{{ closePositionModal.symbol }} {{ closePositionModal.side === 'LONG' ? '多头' : '空头' }} 平仓</h4>
+            <p class="info-text">将为所有持有该币种且方向一致的用户进行平仓操作</p>
+          </div>
+          
+          <!-- 平仓百分比滑块 -->
+          <div class="percentage-slider">
+            <n-form-item :label="`平仓百分比: ${closePositionModal.percentage}%`">
+              <n-slider
+                v-model:value="closePositionModal.percentage"
+                :min="0"
+                :max="100"
+                :step="1"
+                :marks="percentageMarks"
+                :tooltip="false"
+              />
+            </n-form-item>
+          </div>
+          
+          <!-- 用户列表 -->
+          <div class="users-list">
+            <h5>平仓用户列表</h5>
+            <div class="users-container">
+              <div 
+                v-for="user in closePositionModal.affectedUsers" 
+                :key="user.id"
+                class="user-item"
+              >
+                <div class="user-info">
+                  <span class="user-name">{{ user.alias }}</span>
+                  <span class="position-info">
+                    持仓: {{ user.position.amount.toFixed(6) }} {{ closePositionModal.symbol.replace('USDT', '') }}
+                  </span>
+                </div>
+                <div class="profit-info">
+                  <span class="current-profit" :class="getCurrentProfit(user) >= 0 ? 'positive' : 'negative'">
+                    当前盈亏: {{ getCurrentProfit(user) >= 0 ? '+' : '' }}${{ getCurrentProfit(user).toFixed(2) }}
+                  </span>
+                  <span class="expected-profit" :class="user.expectedProfit >= 0 ? 'positive' : 'negative'">
+                    预计收益: {{ user.expectedProfit >= 0 ? '+' : '' }}${{ user.expectedProfit.toFixed(2) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 总计信息 -->
+          <div class="total-info">
+            <div class="total-item">
+              <span class="label">平仓用户数:</span>
+              <span class="value">{{ closePositionModal.affectedUsers.length }} 人</span>
+            </div>
+            <div class="total-item">
+              <span class="label">总预计收益:</span>
+              <span class="value" :class="closePositionModal.totalExpectedProfit >= 0 ? 'positive' : 'negative'">
+                {{ closePositionModal.totalExpectedProfit >= 0 ? '+' : '' }}${{ closePositionModal.totalExpectedProfit.toFixed(2) }}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        <template #action>
+          <div class="modal-actions">
+            <n-button @click="closePositionModal.show = false">取消</n-button>
+            <n-button 
+              type="error" 
+              :loading="closePositionModal.loading"
+              @click="confirmClosePosition"
+            >
+              确认平仓
+            </n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { NTabs, NTabPane, NButton, NEmpty, NSwitch, NInputNumber, NModal, NForm, NFormItem, NSelect, NInput, NRadioGroup, NRadio, NCard, NCheckbox, NCheckboxGroup, NDivider, NAlert } from 'naive-ui'
+import { NTabs, NTabPane, NButton, NEmpty, NSwitch, NInputNumber, NModal, NForm, NFormItem, NSelect, NInput, NRadioGroup, NRadio, NCard, NCheckbox, NCheckboxGroup, NDivider, NAlert, NIcon, NSlider } from 'naive-ui'
 import axios from 'axios'
 
 // 响应式数据
@@ -418,6 +647,39 @@ const batchOrderForm = ref({
 const availableSymbols = ref([])
 const symbolInfo = ref({})
 const maxLeverage = ref(1)
+
+// 市价平仓相关
+const closePositionModal = ref({
+  show: false,
+  symbol: '',
+  side: '',
+  percentage: 100,
+  affectedUsers: [],
+  totalExpectedProfit: 0,
+  loading: false
+})
+
+// 百分比滑块标记
+const percentageMarks = ref({
+  0: '0%',
+  25: '25%',
+  50: '50%',
+  75: '75%',
+  100: '100%'
+})
+
+// 修改杠杆相关
+const modifyLeverageModal = ref({
+  show: false,
+  symbol: '',
+  side: '',
+  currentLeverage: 0,
+  newLeverage: 1,
+  maxLeverage: 1,
+  affectedUsers: [],
+  leverageMarks: {},
+  loading: false
+})
 const minQuantityByNotional = ref(0.001)
 const minQuantityUSDT = ref(10)
 const tickSize = ref(0.1)
@@ -669,6 +931,7 @@ async function fetchAllPositions() {
             console.log(`${position.symbol} ${position.positionSide}: 计算杠杆=${calculatedLeverage.toFixed(2)}x, 计算保证金=${calculatedMargin.toFixed(6)} (名义价值=${notional.toFixed(6)} / 杠杆=${calculatedLeverage.toFixed(2)})`)
             console.log(`${position.symbol} ${position.positionSide}: 存储原始保证金=${initialMargin.toFixed(6)} 用于WebSocket计算`)
             console.log(`${position.symbol} ${position.positionSide}: 维持保证金=${parseFloat(position.maintMargin).toFixed(6)}, 逐仓保证金=${isolatedMargin.toFixed(6)}`)
+            console.log(`${position.symbol} ${position.positionSide}: 强平价格=${position.liquidation_price_usdt || '无'}`)
             
             return {
               id: `${user.id}_${position.symbol}_${position.positionSide}`,
@@ -689,6 +952,7 @@ async function fetchAllPositions() {
               maintMargin: parseFloat(position.maintMargin) || 0, // 维持保证金
               updateTime: position.updateTime, // 更新时间
               priceUpdateTime: position.price_update_time, // 价格更新时间
+              liquidation_price_usdt: position.liquidation_price_usdt, // 强平价格
               // 保存原始数据用于WebSocket计算
               originalEntryPrice: entryPrice, // 原始入场价
               originalUnrealizedPnl: unrealizedPnl, // 原始未实现盈亏
@@ -1401,6 +1665,201 @@ onMounted(async () => {
   startAutoRefresh()
 })
 
+// 仓位操作按钮处理函数
+function handleClosePosition(position) {
+  console.log('市价平仓:', position)
+  
+  // 查找所有持有相同币种且方向一致的用户
+  const affectedUsers = []
+  users.value.forEach(user => {
+    if (user.positions && user.positions.length > 0) {
+      const matchingPosition = user.positions.find(p => 
+        p.symbol === position.symbol && p.side === position.side
+      )
+      if (matchingPosition) {
+        affectedUsers.push({
+          id: user.id,
+          alias: user.alias,
+          position: matchingPosition
+        })
+      }
+    }
+  })
+  
+  // 设置弹窗数据
+  closePositionModal.value = {
+    show: true,
+    symbol: position.symbol,
+    side: position.side,
+    percentage: 100,
+    affectedUsers: affectedUsers,
+    totalExpectedProfit: 0,
+    loading: false
+  }
+  
+  // 计算预计收益
+  calculateExpectedProfit()
+}
+
+function handleTpSl(position) {
+  console.log('止盈止损:', position)
+  // TODO: 实现止盈止损逻辑
+}
+
+async function handleModifyLeverage(position) {
+  console.log('修改杠杆:', position)
+  
+  // 查找所有持有相同币种且方向一致的用户
+  const affectedUsers = []
+  users.value.forEach(user => {
+    if (user.positions && user.positions.length > 0) {
+      const matchingPosition = user.positions.find(p => 
+        p.symbol === position.symbol && p.side === position.side
+      )
+      if (matchingPosition) {
+        affectedUsers.push({
+          id: user.id,
+          alias: user.alias,
+          position: matchingPosition
+        })
+      }
+    }
+  })
+  
+  // 获取当前杠杆（取第一个用户的杠杆作为代表）
+  const currentLeverage = affectedUsers.length > 0 ? affectedUsers[0].position.leverage : 0
+  
+  // 获取该交易对的最大杠杆
+  let maxLeverageForSymbol = 1
+  try {
+    const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/leverage/symbol/${position.symbol}`)
+    if (response.data && response.data.success) {
+      maxLeverageForSymbol = response.data.data.max_leverage || 1
+    }
+  } catch (error) {
+    console.error('获取杠杆信息失败:', error)
+    maxLeverageForSymbol = maxLeverage.value || 1
+  }
+  
+  // 生成滑条标记
+  const leverageMarks = {}
+  const step = Math.max(1, Math.floor(maxLeverageForSymbol / 10))
+  for (let i = 1; i <= maxLeverageForSymbol; i += step) {
+    leverageMarks[i] = `${i}x`
+  }
+  // 确保最大值有标记
+  if (maxLeverageForSymbol > 1) {
+    leverageMarks[maxLeverageForSymbol] = `${maxLeverageForSymbol}x`
+  }
+  
+  // 设置弹窗数据
+  modifyLeverageModal.value = {
+    show: true,
+    symbol: position.symbol,
+    side: position.side,
+    currentLeverage: currentLeverage,
+    newLeverage: Math.min(currentLeverage || 1, maxLeverageForSymbol),
+    maxLeverage: maxLeverageForSymbol,
+    affectedUsers: affectedUsers,
+    leverageMarks: leverageMarks,
+    loading: false
+  }
+}
+
+// 获取用户当前实时盈亏
+function getCurrentProfit(user) {
+  const currentUser = users.value.find(u => u.id === user.id)
+  if (currentUser && currentUser.positions) {
+    const currentPosition = currentUser.positions.find(p => 
+      p.symbol === closePositionModal.value.symbol && p.side === closePositionModal.value.side
+    )
+    return currentPosition ? currentPosition.unrealizedPnl : 0
+  }
+  return 0
+}
+
+// 计算预计收益
+function calculateExpectedProfit() {
+  const percentage = closePositionModal.value.percentage / 100
+  let totalProfit = 0
+  
+  closePositionModal.value.affectedUsers.forEach(user => {
+    // 直接从实时数据中获取当前盈亏，确保数据一致性
+    const currentProfit = getCurrentProfit(user)
+    const expectedProfit = currentProfit * percentage
+    user.expectedProfit = expectedProfit
+    totalProfit += expectedProfit
+  })
+  
+  closePositionModal.value.totalExpectedProfit = totalProfit
+}
+
+// 更新杠杆信息
+function updateLeverageInfo() {
+  // 当选择新杠杆时，可以在这里添加额外的逻辑
+  console.log('选择新杠杆:', modifyLeverageModal.value.newLeverage)
+}
+
+// 确认修改杠杆
+async function confirmModifyLeverage() {
+  try {
+    modifyLeverageModal.value.loading = true
+    
+    // TODO: 调用后端API修改杠杆
+    console.log('确认修改杠杆:', {
+      symbol: modifyLeverageModal.value.symbol,
+      side: modifyLeverageModal.value.side,
+      newLeverage: modifyLeverageModal.value.newLeverage,
+      affectedUsers: modifyLeverageModal.value.affectedUsers
+    })
+    
+    // 模拟API调用
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    // 关闭弹窗
+    modifyLeverageModal.value.show = false
+    
+    // 刷新数据
+    await forceRefresh()
+    
+  } catch (error) {
+    console.error('修改杠杆失败:', error)
+    alert('修改杠杆失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    modifyLeverageModal.value.loading = false
+  }
+}
+
+// 确认平仓
+async function confirmClosePosition() {
+  try {
+    closePositionModal.value.loading = true
+    
+    // TODO: 调用后端API进行平仓
+    console.log('确认平仓:', {
+      symbol: closePositionModal.value.symbol,
+      side: closePositionModal.value.side,
+      percentage: closePositionModal.value.percentage,
+      affectedUsers: closePositionModal.value.affectedUsers
+    })
+    
+    // 模拟API调用
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    // 关闭弹窗
+    closePositionModal.value.show = false
+    
+    // 刷新数据
+    await forceRefresh()
+    
+  } catch (error) {
+    console.error('平仓失败:', error)
+    alert('平仓失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    closePositionModal.value.loading = false
+  }
+}
+
 // 组件卸载时清理定时器
 onUnmounted(() => {
   stopAutoRefresh()
@@ -1419,6 +1878,20 @@ watch(autoRefresh, (newValue) => {
     stopAutoRefresh()
   }
 })
+
+// 监听平仓百分比变化
+watch(() => closePositionModal.value.percentage, () => {
+  if (closePositionModal.value.show) {
+    calculateExpectedProfit()
+  }
+})
+
+// 监听用户数据变化，实时更新预计收益
+watch(() => users.value, () => {
+  if (closePositionModal.value.show) {
+    calculateExpectedProfit()
+  }
+}, { deep: true })
 </script>
 
 <style scoped>
@@ -1640,6 +2113,307 @@ watch(autoRefresh, (newValue) => {
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: space-between;
+}
+
+.position-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.liquidation-price {
+  color: #ff6b35;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 107, 53, 0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 107, 53, 0.3);
+  white-space: nowrap;
+}
+
+.liquidation-price.no-liquidation {
+  color: #999;
+  background: rgba(153, 153, 153, 0.1);
+  border: 1px solid rgba(153, 153, 153, 0.3);
+}
+
+.leverage-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(255, 107, 107, 0.3);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  letter-spacing: 0.3px;
+  transition: all 0.2s ease;
+}
+
+.leverage-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(255, 107, 107, 0.4);
+}
+
+.position-item {
+  margin-bottom: 16px;
+  padding: 16px;
+  background: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  transition: all 0.2s ease;
+}
+
+.position-item:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.position-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--n-border-color);
+  justify-content: flex-start;
+}
+
+.action-btn {
+  flex: 1;
+  min-width: 80px;
+  height: 32px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.close-btn {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+  color: white;
+}
+
+.close-btn:hover {
+  background: linear-gradient(135deg, #ff5252 0%, #d63031 100%);
+}
+
+.tp-sl-btn {
+  background: linear-gradient(135deg, #fdcb6e 0%, #e17055 100%);
+  color: white;
+}
+
+.tp-sl-btn:hover {
+  background: linear-gradient(135deg, #f39c12 0%, #d63031 100%);
+}
+
+.leverage-btn {
+  background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+  color: white;
+}
+
+.leverage-btn:hover {
+  background: linear-gradient(135deg, #0984e3 0%, #2d3436 100%);
+}
+
+/* 市价平仓弹窗样式 */
+.close-position-form {
+  padding: 16px 0;
+}
+
+.close-info {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.close-info h4 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--n-text-color);
+}
+
+.info-text {
+  margin: 0;
+  color: var(--n-text-color-2);
+  font-size: 14px;
+}
+
+.percentage-slider {
+  margin-bottom: 24px;
+}
+
+.users-list {
+  margin-bottom: 24px;
+}
+
+.users-list h5 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--n-text-color);
+}
+
+.users-container {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--n-border-color);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.user-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 4px;
+  background: var(--n-card-color);
+  border-radius: 6px;
+  border: 1px solid var(--n-border-color);
+}
+
+.user-item:last-child {
+  margin-bottom: 0;
+}
+
+.user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.user-name {
+  font-weight: 600;
+  color: var(--n-text-color);
+  font-size: 14px;
+}
+
+.position-info {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+}
+
+.profit-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: right;
+}
+
+.current-profit,
+.expected-profit {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.positive {
+  color: #00b894;
+}
+
+.negative {
+  color: #e17055;
+}
+
+.total-info {
+  display: flex;
+  justify-content: space-between;
+  padding: 16px;
+  background: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.total-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.total-item .label {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+}
+
+.total-item .value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--n-text-color);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* 修改杠杆弹窗样式 */
+.modify-leverage-form {
+  padding: 16px 0;
+}
+
+.leverage-info {
+  margin-bottom: 24px;
+  text-align: center;
+  width: 100%;
+  display: block !important;
+}
+
+.title-main {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--n-text-color);
+  display: block !important;
+  line-height: 1.2;
+  width: 100%;
+}
+
+.title-sub {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--n-color-primary);
+  display: block !important;
+  line-height: 1.2;
+  width: 100%;
+}
+
+.leverage-selector {
+  margin-bottom: 24px;
+  padding: 20px;
+  background: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.leverage-info .current-leverage,
+.leverage-info .new-leverage {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--n-text-color-2);
+}
+
+.leverage-info .new-leverage {
+  color: var(--n-color-primary);
+  font-weight: 600;
 }
 
 .position-details {
@@ -1751,8 +2525,15 @@ watch(autoRefresh, (newValue) => {
 }
 
 .coin-name {
-  font-weight: 600;
-  color: var(--n-text-color);
+  font-weight: 700;
+  font-size: 14px;
+  color: #1a1a1a;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  letter-spacing: 0.5px;
 }
 
 .position-amount,
