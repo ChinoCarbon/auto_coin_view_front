@@ -223,34 +223,59 @@
                       :key="order.id"
                       class="order-item"
                     >
-                      <div class="order-info">
-                        <span class="order-side" :class="order.side.toLowerCase()">
-                          {{ order.side === 'BUY' ? '买入' : '卖出' }}
-                        </span>
-                        <span class="coin-name">{{ order.symbol }}</span>
-                        <span class="order-type">{{ getOrderTypeText(order.type) }}</span>
+                      <div class="order-header">
+                        <div class="order-type-badge">
+                          <span class="order-type" :class="getOrderTypeClass(order.type)">{{ getOrderTypeText(order.type) }}</span>
+                          <span v-if="order.reduceOnly" class="reduce-only-flag">只减仓</span>
+                        </div>
+                        <div class="order-time">{{ formatOrderTime(order.time) }}</div>
                       </div>
-                      <div class="order-details">
-                        <div class="price-qty-info">
-                          <span class="order-price">价格: ${{ order.price.toFixed(6) }}</span>
-                          <span class="order-qty">数量: {{ order.origQty.toFixed(6) }}</span>
+                      
+                      <div class="order-content">
+                        <div class="order-main-info">
+                          <div class="symbol-side">
+                            <span class="coin-name">{{ order.symbol }}</span>
+                            <span class="order-side" :class="order.side.toLowerCase()">
+                              {{ order.side === 'BUY' ? '买入' : '卖出' }}
+                            </span>
+                          </div>
+                          
+                          <div class="trigger-price">
+                            <span class="price-label">触发价格:</span>
+                            <span class="price-value">
+                              {{ order.side === 'BUY' ? '≥' : '≤' }}${{ getTriggerPrice(order).toFixed(6) }}
+                            </span>
+                          </div>
+                          
+                          <div class="quantity-info">
+                            <div class="quantity-item">
+                              <span class="qty-label">数量:</span>
+                              <span class="qty-value">{{ order.origQty.toFixed(6) }} {{ order.symbol.replace('USDT', '') }}</span>
+                            </div>
+                            <div class="quantity-item">
+                              <span class="qty-label">USDT:</span>
+                              <span class="qty-value">${{ (order.origQty * getTriggerPrice(order)).toFixed(2) }}</span>
+                            </div>
+                          </div>
                         </div>
-                        <div v-if="order.stopPrice > 0" class="stop-price-info">
-                          <span class="stop-price">限价: ${{ order.stopPrice.toFixed(6) }}</span>
-                        </div>
-                        <div class="status-time-info">
-                          <span class="order-status" :class="order.status.toLowerCase()">
+                        
+                        <!-- <div class="order-status">
+                          <span class="status-badge" :class="order.status.toLowerCase()">
                             {{ getOrderStatusText(order.status) }}
                           </span>
-                          <span class="order-time">{{ formatOrderTime(order.time) }}</span>
-                        </div>
-                        <div class="execution-info">
-                          <span class="executed-qty">已成交: {{ order.executedQty.toFixed(6) }}</span>
-                          <span class="remaining-qty">剩余: {{ (order.origQty - order.executedQty).toFixed(6) }}</span>
-                        </div>
-                        <div v-if="order.reduceOnly || order.closePosition" class="order-flags">
-                          <span v-if="order.reduceOnly" class="flag reduce-only">减仓</span>
-                          <span v-if="order.closePosition" class="flag close-position">平仓</span>
+                        </div> -->
+                        
+                        <!-- 撤单按钮 - 右下角 -->
+                        <div class="order-actions">
+                          <n-button 
+                            size="small" 
+                            type="error" 
+                            :disabled="order.status !== 'NEW'"
+                            @click="cancelOrder(order)"
+                            class="cancel-order-btn"
+                          >
+                            撤单
+                          </n-button>
                         </div>
                       </div>
                     </div>
@@ -518,6 +543,173 @@
       </n-card>
     </n-modal>
     
+    <!-- 止盈止损弹窗 -->
+    <n-modal v-model:show="tpSlModal.show" :mask-closable="false">
+      <n-card
+        style="width: 600px; max-width: 90vw"
+        title="止盈止损设置"
+        :bordered="false"
+        size="huge"
+        role="dialog"
+        aria-modal="true"
+      >
+        <template #header-extra>
+          <n-button quaternary circle @click="tpSlModal.show = false">
+            ×
+          </n-button>
+        </template>
+        
+        <div class="tpsl-form">
+          <!-- 止盈止损信息 -->
+          <div class="tpsl-info">
+            <h4>{{ tpSlModal.symbol }} {{ tpSlModal.side === 'LONG' ? '多头' : '空头' }}</h4>
+            <h5>止盈止损设置</h5>
+            <p class="info-text">将为所有持有该币种且方向一致的用户设置止盈止损</p>
+          </div>
+          
+          <!-- 止盈设置 -->
+          <div class="tpsl-section">
+            <div class="section-header">
+              <label class="checkbox-label">
+                <input 
+                  type="checkbox" 
+                  :checked="tpSlModal.takeProfit.enabled"
+                  @change="handleTakeProfitChange"
+                  style="margin-right: 8px;"
+                />
+                <span class="section-title">止盈设置</span>
+              </label>
+            </div>
+            
+            <div v-show="tpSlModal.takeProfit.enabled" class="section-content">
+              <n-form-item label="止盈价格">
+                <n-input-number
+                  v-model:value="tpSlModal.takeProfit.price"
+                  :min="0"
+                  :precision="6"
+                  placeholder="输入止盈价格"
+                  :show-button="false"
+                  :default-value="null"
+                  @update:value="updateTpSlCalculations"
+                />
+                <span class="form-tip">USDT</span>
+              </n-form-item>
+              
+              <div class="close-ratio-section">
+                <n-form-item :label="`止盈平仓比例: ${tpSlModal.takeProfit.closeRatio || 100}%`">
+                  <n-slider
+                    v-model:value="tpSlModal.takeProfit.closeRatio"
+                    :min="1"
+                    :max="100"
+                    :step="1"
+                    :marks="percentageMarks"
+                    :tooltip="false"
+                    @update:value="updateTpSlCalculations"
+                  />
+                </n-form-item>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 止损设置 -->
+          <div class="tpsl-section">
+            <div class="section-header">
+              <label class="checkbox-label">
+                <input 
+                  type="checkbox" 
+                  :checked="tpSlModal.stopLoss.enabled"
+                  @change="handleStopLossChange"
+                  style="margin-right: 8px;"
+                />
+                <span class="section-title">止损设置</span>
+              </label>
+            </div>
+            
+            <div v-show="tpSlModal.stopLoss.enabled" class="section-content">
+              <n-form-item label="止损价格">
+                <n-input-number
+                  v-model:value="tpSlModal.stopLoss.price"
+                  :min="0"
+                  :precision="6"
+                  placeholder="输入止损价格"
+                  :show-button="false"
+                  :default-value="null"
+                  @update:value="updateTpSlCalculations"
+                />
+                <span class="form-tip">USDT</span>
+              </n-form-item>
+              
+              <div class="close-ratio-section">
+                <n-form-item :label="`止损平仓比例: ${tpSlModal.stopLoss.closeRatio || 100}%`">
+                  <n-slider
+                    v-model:value="tpSlModal.stopLoss.closeRatio"
+                    :min="1"
+                    :max="100"
+                    :step="1"
+                    :marks="percentageMarks"
+                    :tooltip="false"
+                    @update:value="updateTpSlCalculations"
+                  />
+                </n-form-item>
+              </div>
+            </div>
+          </div>
+          
+          
+          <!-- 用户列表和预计盈亏 -->
+          <div class="users-list">
+            <h5>受影响用户</h5>
+            <div class="users-container">
+              <div 
+                v-for="user in tpSlModal.affectedUsers" 
+                :key="user.id"
+                class="user-item"
+              >
+                <div class="user-info">
+                  <span class="user-name">{{ user.alias }}</span>
+                  <span class="position-info">
+                    持仓: {{ user.position.amount.toFixed(6) }} {{ tpSlModal.symbol.replace('USDT', '') }}
+                  </span>
+                </div>
+                <div class="profit-info">
+                  <div style="color: red; font-size: 12px; margin-bottom: 5px;">
+                    调试: position={{ !!user.position }}, unrealizedPnl={{ user.position?.unrealizedPnl }}<br/>
+                    入场价={{ user.position?.entryPrice }}, 持仓={{ user.position?.amount }}, 杠杆={{ user.position?.leverage }}<br/>
+                    止盈价={{ tpSlModal.takeProfit.price }}, 止损价={{ tpSlModal.stopLoss.price }}<br/>
+                    止盈启用={{ tpSlModal.takeProfit.enabled }}, 止损启用={{ tpSlModal.stopLoss.enabled }}<br/>
+                    expectedTp={{ user.expectedTpProfit }}, expectedSl={{ user.expectedSlLoss }}
+                  </div>
+                  <span class="current-profit" :class="user.position?.unrealizedPnl >= 0 ? 'positive' : 'negative'">
+                    当前盈亏: {{ user.position?.unrealizedPnl >= 0 ? '+' : '' }}${{ (user.position?.unrealizedPnl || 0).toFixed(2) }}
+                  </span>
+                  <span class="expected-profit" :class="user.expectedTpProfit >= 0 ? 'positive' : 'negative'">
+                    预计止盈: {{ user.expectedTpProfit >= 0 ? '+' : '' }}${{ formatNumber(user.expectedTpProfit) }}
+                  </span>
+                  <span class="expected-loss" :class="user.expectedSlLoss >= 0 ? 'positive' : 'negative'">
+                    预计止损: {{ user.expectedSlLoss >= 0 ? '+' : '' }}${{ formatNumber(user.expectedSlLoss) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <template #action>
+          <div class="modal-actions">
+            <n-button @click="tpSlModal.show = false">取消</n-button>
+            <n-button 
+              type="primary" 
+              :loading="tpSlModal.loading"
+              :disabled="!tpSlModal.takeProfit.enabled && !tpSlModal.stopLoss.enabled"
+              @click="confirmTpSl"
+            >
+              确认设置
+            </n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
+    
     <!-- 市价平仓弹窗 -->
     <n-modal v-model:show="closePositionModal.show" :mask-closable="false">
       <n-card
@@ -615,7 +807,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { NTabs, NTabPane, NButton, NEmpty, NSwitch, NInputNumber, NModal, NForm, NFormItem, NSelect, NInput, NRadioGroup, NRadio, NCard, NCheckbox, NCheckboxGroup, NDivider, NAlert, NIcon, NSlider } from 'naive-ui'
 import axios from 'axios'
 
@@ -678,6 +870,26 @@ const modifyLeverageModal = ref({
   maxLeverage: 1,
   affectedUsers: [],
   leverageMarks: {},
+  loading: false
+})
+
+// 止盈止损相关
+const tpSlModal = ref({
+  show: false,
+  symbol: '',
+  side: '',
+  closeRatio: 100,
+  affectedUsers: [],
+  takeProfit: {
+    enabled: false,
+    price: null,
+    closeRatio: 100
+  },
+  stopLoss: {
+    enabled: false,
+    price: null,
+    closeRatio: 100
+  },
   loading: false
 })
 const minQuantityByNotional = ref(0.001)
@@ -760,6 +972,30 @@ function getOrderTypeText(type) {
     'TAKE_PROFIT_LIMIT': '止盈限价'
   }
   return typeMap[type] || type
+}
+
+function getOrderTypeClass(type) {
+  const classMap = {
+    'LIMIT': 'limit',
+    'MARKET': 'market',
+    'STOP_MARKET': 'stop-market',
+    'TAKE_PROFIT_MARKET': 'take-profit-market',
+    'STOP_LOSS_LIMIT': 'stop-loss-limit',
+    'TAKE_PROFIT_LIMIT': 'take-profit-limit'
+  }
+  return classMap[type] || 'default'
+}
+
+function getTriggerPrice(order) {
+  // 对于止损和止盈订单，使用 stopPrice
+  if (order.type === 'STOP_MARKET' || 
+      order.type === 'TAKE_PROFIT_MARKET' || 
+      order.type === 'STOP_LOSS_LIMIT' || 
+      order.type === 'TAKE_PROFIT_LIMIT') {
+    return order.stopPrice || 0
+  }
+  // 对于限价单和市价单，使用 price
+  return order.price || 0
 }
 
 // 格式化挂单时间
@@ -929,7 +1165,6 @@ async function fetchAllPositions() {
             console.log(`${position.symbol} ${position.positionSide}: 入场价=${entryPrice.toFixed(6)}, 标记价=${markPrice.toFixed(6)} (${priceSource})`)
             console.log(`${position.symbol} ${position.positionSide}: 初始保证金=${initialMargin.toFixed(6)}, 盈亏=${unrealizedPnl.toFixed(2)}, 收益率=${calculatedPercentage.toFixed(2)}% (基于初始保证金)`)
             console.log(`${position.symbol} ${position.positionSide}: 计算杠杆=${calculatedLeverage.toFixed(2)}x, 计算保证金=${calculatedMargin.toFixed(6)} (名义价值=${notional.toFixed(6)} / 杠杆=${calculatedLeverage.toFixed(2)})`)
-            console.log(`${position.symbol} ${position.positionSide}: 存储原始保证金=${initialMargin.toFixed(6)} 用于WebSocket计算`)
             console.log(`${position.symbol} ${position.positionSide}: 维持保证金=${parseFloat(position.maintMargin).toFixed(6)}, 逐仓保证金=${isolatedMargin.toFixed(6)}`)
             console.log(`${position.symbol} ${position.positionSide}: 强平价格=${position.liquidation_price_usdt || '无'}`)
             
@@ -1048,11 +1283,11 @@ async function fetchAllOrders() {
           
           // 强制更新响应式数据
           user.orders.splice(0, user.orders.length, ...newOrders)
-          console.log(`更新用户 ${user.alias} 的挂单数据:`, user.orders.length, '个挂单')
+     //     console.log(`更新用户 ${user.alias} 的挂单数据:`, user.orders.length, '个挂单')
         } else if (user) {
           // 用户存在但没有挂单数据
           user.orders.splice(0, user.orders.length)
-          console.log(`用户 ${user.alias} 没有挂单数据`)
+     //     console.log(`用户 ${user.alias} 没有挂单数据`)
         }
       })
     }
@@ -1070,7 +1305,7 @@ let wsLastMessageTime = 0
 
 // 更新仓位价格
 function updatePositionPrices(symbol, currentPrice) {
-  console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
+ // console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
   let hasUpdate = false
   let foundPositions = 0
   
@@ -1078,7 +1313,7 @@ function updatePositionPrices(symbol, currentPrice) {
     user.positions.forEach((position, index) => {
       if (position.symbol === symbol) {
         foundPositions++
-        console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
+      //  console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
         // 获取原始数据（从API获取的固定数据，刷新时更新）
         const originalEntryPrice = position.originalEntryPrice || position.entryPrice
         const originalAmount = position.amount
@@ -1160,11 +1395,11 @@ function updatePositionPrices(symbol, currentPrice) {
         }
         
         hasUpdate = true
-        console.log(`更新 ${symbol} 价格: ${currentPrice}`)
-        console.log(`原始数据 - 入场价: ${originalEntryPrice.toFixed(6)}, 原始盈亏: ${originalUnrealizedPnl.toFixed(2)}, 原始保证金: ${originalMargin.toFixed(6)}`)
-        console.log(`新数据 - 入场价: ${originalEntryPrice.toFixed(6)} (不变), 新盈亏: ${newUnrealizedPnl.toFixed(2)}, 收益率: ${newPercentage.toFixed(2)}% (基于原始保证金: ${originalMargin.toFixed(6)})`)
-        console.log(`名义价值: ${position.originalNotional?.toFixed(6) || position.notional.toFixed(6)} → ${newNotional.toFixed(6)}`)
-        console.log(`保证金: ${position.originalMargin?.toFixed(6) || position.margin.toFixed(6)} → ${newMargin.toFixed(6)}, 杠杆: ${position.originalLeverage?.toFixed(1) || position.leverage.toFixed(1)}x (保持不变)`)
+        // console.log(`更新 ${symbol} 价格: ${currentPrice}`)
+        // console.log(`原始数据 - 入场价: ${originalEntryPrice.toFixed(6)}, 原始盈亏: ${originalUnrealizedPnl.toFixed(2)}, 原始保证金: ${originalMargin.toFixed(6)}`)
+        // console.log(`新数据 - 入场价: ${originalEntryPrice.toFixed(6)} (不变), 新盈亏: ${newUnrealizedPnl.toFixed(2)}, 收益率: ${newPercentage.toFixed(2)}% (基于原始保证金: ${originalMargin.toFixed(6)})`)
+        // console.log(`名义价值: ${position.originalNotional?.toFixed(6) || position.notional.toFixed(6)} → ${newNotional.toFixed(6)}`)
+        // console.log(`保证金: ${position.originalMargin?.toFixed(6) || position.margin.toFixed(6)} → ${newMargin.toFixed(6)}, 杠杆: ${position.originalLeverage?.toFixed(1) || position.leverage.toFixed(1)}x (保持不变)`)
         if (position.side === 'SHORT') {
           console.log(`空头计算: 入场价=${entryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(entryPrice - currentPrice).toFixed(6)})`)
         }
@@ -1178,18 +1413,15 @@ function updatePositionPrices(symbol, currentPrice) {
   if (hasUpdate) {
     // 触发Vue的响应式更新
     users.value = [...users.value]
-    console.log('🔄 已触发Vue响应式更新')
   }
 }
 
 // 启动WebSocket价格订阅
 function startWebSocketSubscription() {
-  console.log('🔄 开始启动WebSocket连接...')
   console.log('📊 当前用户数量:', users.value.length)
   console.log('📊 当前仓位数量:', users.value.reduce((total, user) => total + user.positions.length, 0))
   
   if (wsConnection) {
-    console.log('🔌 关闭现有WebSocket连接')
     wsConnection.close()
   }
   
@@ -1203,10 +1435,8 @@ function startWebSocketSubscription() {
     })
   })
   
-  console.log('🎯 需要监控的交易对:', Array.from(symbols))
   
   if (symbols.size === 0) {
-    console.log('⚠️ 没有需要订阅的交易对，跳过WebSocket连接')
     return
   }
   
@@ -1214,9 +1444,6 @@ function startWebSocketSubscription() {
   wsConnection = new WebSocket('wss://fstream.binance.com/ws/!ticker@arr')
   
   wsConnection.onopen = () => {
-    console.log('✅ WebSocket连接已建立，订阅全市场ticker')
-    console.log('📈 开始接收实时价格数据...')
-    console.log('🎯 需要监控的交易对:', Array.from(symbols))
     
     // 启动心跳检测
     startHeartbeat()
@@ -1228,7 +1455,6 @@ function startWebSocketSubscription() {
     
     try {
       const data = JSON.parse(event.data)
-      console.log('📨 收到WebSocket数据，包含', data.length, '个交易对')
       
       if (Array.isArray(data)) {
         let processedCount = 0
@@ -1259,7 +1485,6 @@ function startWebSocketSubscription() {
   }
   
   wsConnection.onclose = (event) => {
-    console.log('🔌 WebSocket连接已关闭')
     console.log('关闭代码:', event.code)
     console.log('关闭原因:', event.reason)
     console.log('是否正常关闭:', event.wasClean)
@@ -1270,7 +1495,6 @@ function startWebSocketSubscription() {
     // 5秒后重连
     setTimeout(() => {
       if (autoRefresh.value) {
-        console.log('🔄 尝试重新连接WebSocket...')
         startWebSocketSubscription()
       } else {
         console.log('⏸️ 自动刷新已关闭，跳过重连')
@@ -1287,7 +1511,6 @@ function startWebSocketSubscription() {
 
 // 自动刷新控制（现在只控制WebSocket）
 function startAutoRefresh() {
-  console.log('🔄 启动自动刷新，autoRefresh =', autoRefresh.value)
   
   if (refreshInterval.value) {
     clearInterval(refreshInterval.value)
@@ -1296,7 +1519,6 @@ function startAutoRefresh() {
   if (autoRefresh.value) {
     // 启动WebSocket订阅
     startWebSocketSubscription()
-    console.log('✅ 开始WebSocket价格订阅')
   } else {
     console.log('⏸️ 自动刷新已关闭')
   }
@@ -1304,7 +1526,6 @@ function startAutoRefresh() {
 
 // 启动心跳检测
 function startHeartbeat() {
-  console.log('💓 启动WebSocket心跳检测...')
   wsLastMessageTime = Date.now()
   
   if (wsHeartbeatInterval) {
@@ -1315,12 +1536,9 @@ function startHeartbeat() {
     const now = Date.now()
     const timeSinceLastMessage = now - wsLastMessageTime
     
-    console.log(`💓 心跳检测: 距离上次消息 ${Math.round(timeSinceLastMessage / 1000)} 秒`)
     
     // 如果超过30秒没有收到消息，认为连接已断开
     if (timeSinceLastMessage > 30000) {
-      console.log('⚠️ WebSocket连接可能已过期，超过30秒未收到消息')
-      console.log('🔄 主动关闭并重新连接...')
       
       if (wsConnection) {
         wsConnection.close()
@@ -1334,8 +1552,6 @@ function startHeartbeat() {
     
     // 检查连接状态
     if (wsConnection && wsConnection.readyState !== WebSocket.OPEN) {
-      console.log('⚠️ WebSocket连接状态异常:', wsConnection.readyState)
-      console.log('🔄 重新连接...')
       
       if (autoRefresh.value) {
         startWebSocketSubscription()
@@ -1346,7 +1562,6 @@ function startHeartbeat() {
 
 // 停止心跳检测
 function stopHeartbeat() {
-  console.log('💔 停止WebSocket心跳检测')
   if (wsHeartbeatInterval) {
     clearInterval(wsHeartbeatInterval)
     wsHeartbeatInterval = null
@@ -1355,21 +1570,13 @@ function stopHeartbeat() {
 
 // 手动测试WebSocket连接
 function testWebSocketConnection() {
-  console.log('🧪 手动测试WebSocket连接...')
-  console.log('当前WebSocket状态:', wsConnection?.readyState)
-  console.log('WebSocket状态码: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED')
-  console.log('距离上次消息:', Math.round((Date.now() - wsLastMessageTime) / 1000), '秒')
   
   if (wsConnection) {
-    console.log('当前连接状态:', wsConnection.readyState)
     if (wsConnection.readyState === WebSocket.OPEN) {
-      console.log('✅ WebSocket连接正常')
     } else {
-      console.log('❌ WebSocket连接异常，尝试重新连接...')
       startWebSocketSubscription()
     }
   } else {
-    console.log('❌ 没有WebSocket连接，尝试创建...')
     startWebSocketSubscription()
   }
 }
@@ -1383,7 +1590,6 @@ function stopAutoRefresh() {
   if (wsConnection) {
     wsConnection.close()
     wsConnection = null
-    console.log('停止WebSocket价格订阅')
   }
 }
 
@@ -1427,6 +1633,79 @@ async function refreshOrders() {
   console.log('刷新挂单数据...')
   await fetchAllOrders()
   console.log('挂单刷新完成')
+}
+
+// 撤单功能
+async function cancelOrder(order) {
+  try {
+    console.log('开始撤单:', order)
+    
+    // 准备API请求参数
+    const requestData = {
+      symbol: order.symbol,
+      position_side: order.positionSide,
+      order_type: order.type,
+      side: order.side,
+      use_testnet: false
+    }
+    
+    // 根据订单类型添加价格参数
+    if (order.stopPrice && order.stopPrice > 0) {
+      requestData.stop_price = order.stopPrice
+    }
+    if (order.price && order.price > 0) {
+      requestData.price = order.price
+    }
+    
+    console.log('发送撤单请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel`, requestData)
+    
+    console.log('撤单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
+      
+      // 显示成功信息
+      let successMessage = `撤单成功！\n`
+      successMessage += `交易对: ${data.symbol}\n`
+      successMessage += `仓位方向: ${data.position_side}\n`
+      successMessage += `订单类型: ${data.order_type}\n`
+      successMessage += `订单方向: ${data.side}\n`
+      successMessage += `总用户数: ${data.total_users}\n`
+      successMessage += `有订单的用户: ${data.users_with_orders}\n`
+      successMessage += `成功撤单: ${data.successful_cancels}\n`
+      successMessage += `失败撤单: ${data.failed_cancels}\n\n`
+      
+      // 显示每个用户的撤单结果
+      data.results.forEach((result, index) => {
+        successMessage += `用户${index + 1} (${result.alias}):\n`
+        successMessage += `  匹配订单数: ${result.matching_orders_count}\n`
+        successMessage += `  成功撤单: ${result.successful_cancels}\n`
+        successMessage += `  状态: ${result.success ? '成功' : '失败'}\n`
+        successMessage += `  消息: ${result.message}\n`
+        if (result.cancel_results && result.cancel_results.length > 0) {
+          successMessage += `  订单详情:\n`
+          result.cancel_results.forEach(cancelResult => {
+            successMessage += `    订单ID: ${cancelResult.order_id}, 状态: ${cancelResult.status}\n`
+          })
+        }
+        successMessage += '\n'
+      })
+      
+      alert(successMessage)
+      
+      // 刷新挂单数据
+      await fetchAllOrders()
+    } else {
+      throw new Error(response.data?.message || '撤单失败')
+    }
+  } catch (error) {
+    console.error('撤单失败:', error)
+    const errorMessage = error.response?.data?.message || error.message || '撤单失败'
+    alert('撤单失败: ' + errorMessage)
+  }
 }
 
 // 批量下单相关方法
@@ -1630,7 +1909,40 @@ async function submitBatchOrder() {
     if (successDetails.length > 0) {
       resultMessage += '成功详情:\n'
       successDetails.forEach(detail => {
-        resultMessage += `• ${detail.user}: ${detail.data.total_orders}个订单，成功${detail.data.successful_orders}个\n`
+        const data = detail.data.data
+        resultMessage += `• ${detail.user}:\n`
+        resultMessage += `  总订单数: ${data.total_orders}\n`
+        resultMessage += `  成功订单: ${data.successful_orders}\n`
+        resultMessage += `  失败订单: ${data.failed_orders}\n`
+        
+        // 显示每个订单的详细信息
+        if (data.results && data.results.length > 0) {
+          data.results.forEach((orderResult, orderIndex) => {
+            resultMessage += `  订单${orderIndex + 1}:\n`
+            resultMessage += `    交易对: ${orderResult.symbol}\n`
+            resultMessage += `    方向: ${orderResult.side === 'BUY' ? '开多' : '开空'}\n`
+            resultMessage += `    数量: ${orderResult.coin_quantity} ${orderResult.symbol.replace('USDT', '')}\n`
+            resultMessage += `    USDT金额: ${orderResult.usdt_quantity}\n`
+            resultMessage += `    杠杆: ${orderResult.leverage}x\n`
+            resultMessage += `    当前价格: $${orderResult.current_price}\n`
+            resultMessage += `    状态: ${orderResult.success ? '成功' : '失败'}\n`
+            
+            if (orderResult.main_order) {
+              resultMessage += `    主订单ID: ${orderResult.main_order.orderId}\n`
+              resultMessage += `    订单状态: ${orderResult.main_order.status}\n`
+            }
+            
+            if (orderResult.tp_sl_error) {
+              resultMessage += `    止盈止损错误: ${orderResult.tp_sl_error}\n`
+            }
+            
+            if (orderResult.orders && orderResult.orders.length > 0) {
+              resultMessage += `    相关订单: ${orderResult.orders.length}个\n`
+            }
+            
+            resultMessage += '\n'
+          })
+        }
       })
     }
     
@@ -1703,7 +2015,55 @@ function handleClosePosition(position) {
 
 function handleTpSl(position) {
   console.log('止盈止损:', position)
-  // TODO: 实现止盈止损逻辑
+  
+  // 查找所有持有相同币种且方向一致的用户
+  const affectedUsers = []
+  users.value.forEach(user => {
+    if (user.positions && user.positions.length > 0) {
+      const matchingPosition = user.positions.find(p => 
+        p.symbol === position.symbol && p.side === position.side
+      )
+      if (matchingPosition) {
+        affectedUsers.push({
+          id: user.id,
+          alias: user.alias,
+          position: matchingPosition,
+          positions: user.positions, // 添加完整的positions数组
+          expectedTpProfit: 0,
+          expectedSlLoss: 0
+        })
+      }
+    }
+  })
+  
+  console.log('找到的受影响用户:', affectedUsers)
+  
+  // 设置弹窗数据
+  tpSlModal.value = {
+    show: true,
+    symbol: position.symbol,
+    side: position.side,
+    closeRatio: 100,
+    affectedUsers: affectedUsers,
+    takeProfit: {
+      enabled: false,
+      price: null,
+      closeRatio: 100
+    },
+    stopLoss: {
+      enabled: false,
+      price: null,
+      closeRatio: 100
+    },
+    loading: false
+  }
+  
+  console.log('设置的模态框数据:', tpSlModal.value)
+  
+  // 立即计算一次预计盈亏
+  nextTick(() => {
+    updateUserExpectedProfits()
+  })
 }
 
 async function handleModifyLeverage(position) {
@@ -1800,31 +2160,358 @@ function updateLeverageInfo() {
   console.log('选择新杠杆:', modifyLeverageModal.value.newLeverage)
 }
 
+// 处理止盈checkbox变化
+function handleTakeProfitChange(event) {
+  console.log('止盈checkbox变化:', event.target.checked)
+  tpSlModal.value.takeProfit.enabled = event.target.checked
+  console.log('更新后止盈状态:', tpSlModal.value.takeProfit.enabled)
+  // 强制更新
+  nextTick(() => {
+    updateTpSlCalculations()
+  })
+}
+
+// 处理止损checkbox变化
+function handleStopLossChange(event) {
+  console.log('止损checkbox变化:', event.target.checked)
+  tpSlModal.value.stopLoss.enabled = event.target.checked
+  console.log('更新后止损状态:', tpSlModal.value.stopLoss.enabled)
+  // 强制更新
+  nextTick(() => {
+    updateTpSlCalculations()
+  })
+}
+
+// 格式化数值显示
+function formatNumber(value) {
+  if (isNaN(value) || value === null || value === undefined) {
+    return '0.00'
+  }
+  return parseFloat(value).toFixed(2)
+}
+
+// 更新止盈止损计算
+function updateTpSlCalculations() {
+  console.log('止盈止损计算更新', {
+    takeProfit: tpSlModal.value.takeProfit,
+    stopLoss: tpSlModal.value.stopLoss
+  })
+  console.log('止盈enabled:', tpSlModal.value.takeProfit.enabled)
+  console.log('止损enabled:', tpSlModal.value.stopLoss.enabled)
+  updateUserExpectedProfits()
+}
+
+
+// 更新用户预计盈亏
+function updateUserExpectedProfits() {
+  console.log('=== 开始更新用户预计盈亏 ===')
+  const modal = tpSlModal.value
+  
+  if (!modal || !modal.affectedUsers) {
+    console.log('模态框或受影响用户数据不存在')
+    return
+  }
+  
+  console.log('开始更新用户预计盈亏，用户数量:', modal.affectedUsers.length)
+  console.log('止盈设置:', modal.takeProfit)
+  console.log('止损设置:', modal.stopLoss)
+  console.log('模态框数据:', modal)
+  
+  modal.affectedUsers.forEach((user, index) => {
+    console.log(`处理用户 ${index}:`, user)
+    // 检查用户是否有positions数据
+    if (!user.positions || !Array.isArray(user.positions)) {
+      console.log('用户没有positions数据:', user)
+      user.expectedTpProfit = 0
+      user.expectedSlLoss = 0
+      return
+    }
+    
+    // 获取用户的仓位信息
+    const userPosition = user.positions.find(p => 
+      p.symbol === modal.symbol && p.side === modal.side
+    )
+    
+    if (!userPosition) {
+      user.expectedTpProfit = 0
+      user.expectedSlLoss = 0
+      return
+    }
+    
+    const entryPrice = parseFloat(userPosition.entryPrice)
+    const positionAmt = parseFloat(userPosition.amount) // 使用 amount 而不是 positionAmt
+    const leverage = parseFloat(userPosition.leverage) || 1
+    
+    // 验证数值有效性
+    if (isNaN(entryPrice) || isNaN(positionAmt) || entryPrice <= 0) {
+      console.log('无效的仓位数据:', { entryPrice, positionAmt, userPosition })
+      user.expectedTpProfit = 0
+      user.expectedSlLoss = 0
+      return
+    }
+    
+    // 计算名义价值（持仓量 * 入场价）
+    const notionalValue = Math.abs(positionAmt) * entryPrice
+    // 计算实际保证金（名义价值 / 杠杆倍数）
+    const margin = notionalValue / leverage
+    
+    console.log('计算数据:', {
+      entryPrice,
+      positionAmt,
+      leverage,
+      notionalValue,
+      margin,
+      side: userPosition.side,
+      takeProfitEnabled: modal.takeProfit.enabled,
+      takeProfitPrice: modal.takeProfit.price,
+      stopLossEnabled: modal.stopLoss.enabled,
+      stopLossPrice: modal.stopLoss.price
+    })
+    
+    // 计算预计止盈
+    if (modal.takeProfit.enabled && modal.takeProfit.price && modal.takeProfit.price > 0) {
+      const tpPrice = parseFloat(modal.takeProfit.price)
+      const tpCloseRatio = (modal.takeProfit.closeRatio || 100) / 100
+      
+      if (isNaN(tpPrice) || tpPrice <= 0) {
+        user.expectedTpProfit = 0
+      } else {
+        let priceDiff, priceDiffRatio
+        
+        if (userPosition.side === 'LONG') {
+          // 多头：价格上涨为盈利
+          priceDiff = tpPrice - entryPrice
+          priceDiffRatio = priceDiff / entryPrice
+        } else {
+          // 空头：价格下跌为盈利
+          priceDiff = entryPrice - tpPrice
+          priceDiffRatio = priceDiff / entryPrice
+        }
+        
+        // 杠杆交易收益计算：
+        // 收益 = 保证金 * 价格变化比例 * 杠杆倍数 * 平仓比例
+        const expectedProfit = margin * priceDiffRatio * leverage * tpCloseRatio
+        
+        console.log('止盈计算:', {
+          tpPrice,
+          entryPrice,
+          priceDiff,
+          priceDiffRatio,
+          margin,
+          leverage,
+          tpCloseRatio,
+          expectedProfit,
+          side: userPosition.side
+        })
+        
+        user.expectedTpProfit = isNaN(expectedProfit) ? 0 : expectedProfit
+      }
+    } else {
+      user.expectedTpProfit = 0
+    }
+    
+    // 计算预计止损
+    if (modal.stopLoss.enabled && modal.stopLoss.price && modal.stopLoss.price > 0) {
+      const slPrice = parseFloat(modal.stopLoss.price)
+      const slCloseRatio = (modal.stopLoss.closeRatio || 100) / 100
+      
+      if (isNaN(slPrice) || slPrice <= 0) {
+        user.expectedSlLoss = 0
+      } else {
+        let priceDiff, priceDiffRatio
+        
+        if (userPosition.side === 'LONG') {
+          // 多头：止损价格低于入场价为亏损，高于入场价为盈利
+          priceDiff = slPrice - entryPrice  // 止损价 - 入场价
+          priceDiffRatio = priceDiff / entryPrice
+        } else {
+          // 空头：止损价格高于入场价为亏损，低于入场价为盈利
+          priceDiff = entryPrice - slPrice  // 入场价 - 止损价
+          priceDiffRatio = priceDiff / entryPrice
+        }
+        
+        // 杠杆交易亏损计算：
+        // 亏损 = 保证金 * 价格变化比例 * 杠杆倍数 * 平仓比例
+        const expectedLoss = margin * priceDiffRatio * leverage * slCloseRatio
+        
+        console.log('止损计算:', {
+          slPrice,
+          entryPrice,
+          priceDiff,
+          priceDiffRatio,
+          margin,
+          leverage,
+          slCloseRatio,
+          expectedLoss,
+          side: userPosition.side,
+          interpretation: expectedLoss > 0 ? '止损后盈利' : expectedLoss < 0 ? '止损后亏损' : '止损后无盈亏'
+        })
+        
+        user.expectedSlLoss = isNaN(expectedLoss) ? 0 : expectedLoss
+      }
+    } else {
+      user.expectedSlLoss = 0
+    }
+    
+    console.log(`用户 ${index} 最终结果:`, {
+      expectedTpProfit: user.expectedTpProfit,
+      expectedSlLoss: user.expectedSlLoss
+    })
+  })
+  
+  console.log('=== 用户预计盈亏更新完成 ===')
+}
+
+// 确认止盈止损设置
+async function confirmTpSl() {
+  try {
+    tpSlModal.value.loading = true
+    
+    // 准备API请求参数
+    const requestData = {
+      symbol: tpSlModal.value.symbol,
+      position_side: tpSlModal.value.side,
+      user_orders: {},
+      use_testnet: false
+    }
+    
+    // 为每个用户计算平仓量
+    tpSlModal.value.affectedUsers.forEach(user => {
+      const userOrder = {}
+      
+      // 计算止盈平仓量（USDT金额）
+      if (tpSlModal.value.takeProfit.enabled && tpSlModal.value.takeProfit.price) {
+        const takeProfitPrice = parseFloat(tpSlModal.value.takeProfit.price)
+        const takeProfitRatio = (tpSlModal.value.takeProfit.closeRatio || 100) / 100
+        
+        // 计算当前仓位价值（USDT）
+        const currentPositionValue = Math.abs(user.position.amount) * user.position.entryPrice
+        const takeProfitAmount = currentPositionValue * takeProfitRatio
+        
+        userOrder.take_profit_price = takeProfitPrice
+        userOrder.take_profit_amount = takeProfitAmount
+      }
+      
+      // 计算止损平仓量（USDT金额）
+      if (tpSlModal.value.stopLoss.enabled && tpSlModal.value.stopLoss.price) {
+        const stopLossPrice = parseFloat(tpSlModal.value.stopLoss.price)
+        const stopLossRatio = (tpSlModal.value.stopLoss.closeRatio || 100) / 100
+        
+        // 计算当前仓位价值（USDT）
+        const currentPositionValue = Math.abs(user.position.amount) * user.position.entryPrice
+        const stopLossAmount = currentPositionValue * stopLossRatio
+        
+        userOrder.stop_loss_price = stopLossPrice
+        userOrder.stop_loss_amount = stopLossAmount
+      }
+      
+      // 只有当用户有止盈或止损设置时才添加到请求中
+      if (Object.keys(userOrder).length > 0) {
+        requestData.user_orders[user.id] = userOrder
+      }
+    })
+    
+    console.log('发送止盈止损请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/positions/tp-sl`, requestData)
+    
+    console.log('止盈止损响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
+      
+      // 显示成功信息
+      let successMessage = `止盈止损设置成功！\n`
+      successMessage += `交易对: ${tpSlModal.value.symbol}\n`
+      successMessage += `仓位方向: ${tpSlModal.value.side}\n`
+      successMessage += `成功设置用户数: ${data.results.length}\n\n`
+      
+      // 显示每个用户的设置结果
+      data.results.forEach((result, index) => {
+        successMessage += `用户${index + 1} (${result.alias}):\n`
+        if (result.take_profit_price) {
+          successMessage += `  止盈: $${result.take_profit_price} (${result.take_profit_amount} USDT, ${result.take_profit_quantity} ${tpSlModal.value.symbol.replace('USDT', '')})\n`
+        }
+        if (result.stop_loss_price) {
+          successMessage += `  止损: $${result.stop_loss_price} (${result.stop_loss_amount} USDT, ${result.stop_loss_quantity} ${tpSlModal.value.symbol.replace('USDT', '')})\n`
+        }
+        successMessage += `  当前价格: $${result.current_price}\n`
+        successMessage += `  状态: ${result.success ? '成功' : '失败'}\n`
+        if (result.orders && result.orders.length > 0) {
+          successMessage += `  订单数: ${result.orders.length}\n`
+        }
+        successMessage += '\n'
+      })
+      
+      alert(successMessage)
+      
+      // 关闭弹窗
+      tpSlModal.value.show = false
+      
+      // 刷新仓位数据
+      await fetchAllPositions()
+    } else {
+      throw new Error(response.data?.message || '设置止盈止损失败')
+    }
+    
+  } catch (error) {
+    console.error('设置止盈止损失败:', error)
+    const errorMessage = error.response?.data?.message || error.message || '设置止盈止损失败'
+    alert('设置止盈止损失败: ' + errorMessage)
+  } finally {
+    tpSlModal.value.loading = false
+  }
+}
+
 // 确认修改杠杆
 async function confirmModifyLeverage() {
   try {
     modifyLeverageModal.value.loading = true
     
-    // TODO: 调用后端API修改杠杆
-    console.log('确认修改杠杆:', {
+    // 构建请求数据
+    const requestData = {
       symbol: modifyLeverageModal.value.symbol,
-      side: modifyLeverageModal.value.side,
-      newLeverage: modifyLeverageModal.value.newLeverage,
-      affectedUsers: modifyLeverageModal.value.affectedUsers
-    })
+      position_side: modifyLeverageModal.value.side,
+      new_leverage: modifyLeverageModal.value.newLeverage,
+      use_testnet: false
+    }
     
-    // 模拟API调用
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    console.log('发送修改杠杆请求:', requestData)
     
-    // 关闭弹窗
-    modifyLeverageModal.value.show = false
+    // 调用后端API修改杠杆
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/leverage/modify`, requestData)
     
-    // 刷新数据
-    await forceRefresh()
+    if (response.data && response.data.success) {
+      const result = response.data.data
+      console.log('修改杠杆结果:', result)
+      
+      // 显示成功信息
+      const successMessage = `杠杆修改完成！\n\n` +
+        `📊 交易对: ${result.symbol}\n` +
+        `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n` +
+        `⚡ 新杠杆: ${result.new_leverage}x\n\n` +
+        `👥 用户统计:\n` +
+        `   • 总用户数: ${result.total_users}\n` +
+        `   • 有仓位的用户: ${result.users_with_position}\n` +
+        `   • 成功修改: ${result.successful_modifications}\n` +
+        `   • 失败: ${result.failed_modifications}`
+      
+      alert(successMessage)
+      
+      // 关闭弹窗
+      modifyLeverageModal.value.show = false
+      
+      // 刷新数据
+      await forceRefresh()
+    } else {
+      throw new Error(response.data?.message || '修改杠杆请求失败')
+    }
     
   } catch (error) {
     console.error('修改杠杆失败:', error)
-    alert('修改杠杆失败: ' + (error.response?.data?.message || error.message))
+    const errorMessage = error.response?.data?.message || error.message || '修改杠杆失败'
+    alert('修改杠杆失败: ' + errorMessage)
   } finally {
     modifyLeverageModal.value.loading = false
   }
@@ -1835,26 +2522,49 @@ async function confirmClosePosition() {
   try {
     closePositionModal.value.loading = true
     
-    // TODO: 调用后端API进行平仓
-    console.log('确认平仓:', {
+    // 构建请求数据
+    const requestData = {
       symbol: closePositionModal.value.symbol,
-      side: closePositionModal.value.side,
-      percentage: closePositionModal.value.percentage,
-      affectedUsers: closePositionModal.value.affectedUsers
-    })
+      position_side: closePositionModal.value.side,
+      close_ratio: closePositionModal.value.percentage,
+      use_testnet: false
+    }
     
-    // 模拟API调用
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    console.log('发送平仓请求:', requestData)
     
-    // 关闭弹窗
-    closePositionModal.value.show = false
+    // 调用后端API进行平仓
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/positions/market-close`, requestData)
     
-    // 刷新数据
-    await forceRefresh()
+    if (response.data && response.data.success) {
+      const result = response.data.data
+      console.log('平仓结果:', result)
+      
+      // 显示成功信息
+      const successMessage = `平仓完成！\n\n` +
+        `📊 交易对: ${result.symbol}\n` +
+        `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n` +
+        `📉 平仓比例: ${result.close_ratio}%\n\n` +
+        `👥 用户统计:\n` +
+        `   • 总用户数: ${result.total_users}\n` +
+        `   • 有仓位的用户: ${result.users_with_position}\n` +
+        `   • 成功平仓: ${result.successful_closes}\n` +
+        `   • 失败: ${result.failed_closes}`
+      
+      alert(successMessage)
+      
+      // 关闭弹窗
+      closePositionModal.value.show = false
+      
+      // 刷新数据
+      await forceRefresh()
+    } else {
+      throw new Error(response.data?.message || '平仓请求失败')
+    }
     
   } catch (error) {
     console.error('平仓失败:', error)
-    alert('平仓失败: ' + (error.response?.data?.message || error.message))
+    const errorMessage = error.response?.data?.message || error.message || '平仓失败'
+    alert('平仓失败: ' + errorMessage)
   } finally {
     closePositionModal.value.loading = false
   }
@@ -1892,6 +2602,44 @@ watch(() => users.value, () => {
     calculateExpectedProfit()
   }
 }, { deep: true })
+
+// 监听止盈止损价格变化
+watch(() => tpSlModal.value.takeProfit.price, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
+
+watch(() => tpSlModal.value.stopLoss.price, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
+
+watch(() => tpSlModal.value.takeProfit.closeRatio, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
+
+watch(() => tpSlModal.value.stopLoss.closeRatio, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
+
+// 监听止盈止损开关变化
+watch(() => tpSlModal.value.takeProfit.enabled, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
+
+watch(() => tpSlModal.value.stopLoss.enabled, () => {
+  if (tpSlModal.value.show) {
+    updateTpSlCalculations()
+  }
+})
 </script>
 
 <style scoped>
@@ -2101,11 +2849,18 @@ watch(() => users.value, () => {
 .order-item {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: 12px;
+  padding: 16px;
   background: var(--n-card-color);
   border: 1px solid var(--n-border-color);
-  border-radius: 8px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  transition: all 0.2s ease;
+}
+
+.order-item:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
 }
 
 .position-info,
@@ -2779,6 +3534,320 @@ watch(() => users.value, () => {
   font-size: 12px;
   margin-top: 4px;
   text-align: center;
+}
+
+/* 新的挂单UI样式 */
+.order-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.order-type-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-type {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: white;
+}
+
+.order-type.limit {
+  background: #2196f3;
+}
+
+.order-type.market {
+  background: #4caf50;
+}
+
+.order-type.stop-market {
+  background: #ff9800;
+}
+
+.order-type.take-profit-market {
+  background: #9c27b0;
+}
+
+.order-type.stop-loss-limit {
+  background: #f44336;
+}
+
+.order-type.take-profit-limit {
+  background: #673ab7;
+}
+
+.order-type.default {
+  background: var(--n-color-primary);
+}
+
+.reduce-only-flag {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ff6b6b;
+  color: white;
+}
+
+.order-time {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+  font-family: monospace;
+}
+
+.order-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.order-main-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.symbol-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trigger-price {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.price-label {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+  font-weight: 500;
+}
+
+.price-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--n-color-primary);
+  font-family: monospace;
+}
+
+.quantity-info {
+  display: flex;
+  gap: 16px;
+}
+
+.quantity-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.qty-label {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+  font-weight: 500;
+}
+
+.qty-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--n-text-color);
+  font-family: monospace;
+}
+
+.order-status {
+  display: flex;
+  align-items: center;
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.status-badge.new {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.status-badge.partially_filled {
+  background: #fff3e0;
+  color: #f57c00;
+}
+
+.status-badge.filled {
+  background: #e8f5e8;
+  color: #2e7d32;
+}
+
+.status-badge.canceled {
+  background: #ffebee;
+  color: #d32f2f;
+}
+
+/* 撤单按钮样式 */
+.order-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--n-border-color);
+}
+
+.cancel-order-btn {
+  font-size: 12px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.cancel-order-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 止盈止损弹窗样式 */
+.tpsl-form {
+  padding: 16px 0;
+}
+
+.tpsl-info {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.tpsl-info h4 {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--n-text-color);
+  display: block !important;
+  line-height: 1.2;
+  width: 100%;
+}
+
+.tpsl-info h5 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--n-color-primary);
+  display: block !important;
+  line-height: 1.2;
+  width: 100%;
+}
+
+.tpsl-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.section-header {
+  margin-bottom: 16px;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  z-index: 1;
+}
+
+.section-header .n-checkbox {
+  width: 100%;
+  cursor: pointer;
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 2;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  width: 100%;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  cursor: pointer;
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  accent-color: #18a058;
+  appearance: none;
+  border: 2px solid #d9d9d9;
+  border-radius: 3px;
+  background: white;
+  position: relative;
+}
+
+.checkbox-label input[type="checkbox"]:checked {
+  background: #18a058;
+  border-color: #18a058;
+}
+
+.checkbox-label input[type="checkbox"]:checked::after {
+  content: '✓';
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--n-text-color);
+}
+
+.section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+
+.calculated-price {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--n-color-primary);
+  color: white;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.close-ratio-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.expected-loss {
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .order-details {

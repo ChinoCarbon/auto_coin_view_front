@@ -1,6 +1,7 @@
 <template>
-  <n-notification-provider>
-    <n-layout style="height: 100vh">
+  <n-config-provider>
+    <n-notification-provider>
+      <n-layout style="height: 100vh">
       <n-layout-header class="app-header">
         <div class="header-content">
           <!-- Logo区域 -->
@@ -114,13 +115,14 @@
         </div>
       </n-drawer-content>
     </n-drawer>
-  </n-notification-provider>
+    </n-notification-provider>
+  </n-config-provider>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { NLayout, NLayoutHeader, NLayoutContent, NMenu, NNotificationProvider, NButton, NIcon, NBadge, NDrawer, NDrawerContent, NEmpty } from 'naive-ui'
+import { NConfigProvider, NLayout, NLayoutHeader, NLayoutContent, NMenu, NNotificationProvider, NButton, NIcon, NBadge, NDrawer, NDrawerContent, NEmpty } from 'naive-ui'
 
 const router = useRouter()
 
