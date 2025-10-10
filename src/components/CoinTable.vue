@@ -91,6 +91,10 @@ const props = defineProps({
   apiPrefix: {
     type: String,
     default: '' // 空字符串表示普通接口，'/admin' 表示管理员接口
+  },
+  currentUser: {
+    type: String,
+    default: '' // 当前用户名，空字符串表示管理员模式
   }
 })
 
@@ -271,6 +275,42 @@ async function getAllSupportedCoins() {
   } catch (err) {
     return []
   }
+}
+
+// localStorage 辅助函数 - 用于 user 模式
+function getUserCoinsKey() {
+  return `user_coins_${props.currentUser}`
+}
+
+function saveUserCoins(coins) {
+  if (!props.currentUser) return
+  localStorage.setItem(getUserCoinsKey(), JSON.stringify(coins))
+}
+
+function loadUserCoins() {
+  if (!props.currentUser) return []
+  try {
+    const stored = localStorage.getItem(getUserCoinsKey())
+    return stored ? JSON.parse(stored) : []
+  } catch (err) {
+    return []
+  }
+}
+
+function addUserCoin(coin) {
+  if (!props.currentUser) return
+  const userCoins = loadUserCoins()
+  if (!userCoins.includes(coin)) {
+    userCoins.push(coin)
+    saveUserCoins(userCoins)
+  }
+}
+
+function removeUserCoin(coin) {
+  if (!props.currentUser) return
+  const userCoins = loadUserCoins()
+  const filtered = userCoins.filter(c => c !== coin)
+  saveUserCoins(filtered)
 }
 
 // Handle search/add coin
@@ -589,8 +629,16 @@ async function fetchPoolCoins() {
       `${import.meta.env.VITE_API_BASE}/pool/coins`
     
     const res = await axios.get(endpoint)
-    const list = Array.isArray(res.data && res.data.coins) ? res.data.coins : []
-    return list.map((c) => String(c))
+    let list = Array.isArray(res.data && res.data.coins) ? res.data.coins : []
+    list = list.map((c) => String(c))
+    
+    // user 模式：只返回该用户添加的币种
+    if (props.currentUser) {
+      const userCoins = loadUserCoins()
+      list = list.filter(coin => userCoins.includes(coin))
+    }
+    
+    return list
   } catch (err) {
     return []
   }
@@ -874,6 +922,7 @@ async function refreshTable() {
 // 检查服务器币列表是否有变化
 async function checkServerCoinsSync() {
   try {
+    // fetchPoolCoins 已经包含了 user 模式的过滤逻辑
     const serverCoins = await fetchPoolCoins()
     const currentCoins = internalCoins.value.map(c => String(c)).sort()
     const serverCoinsSorted = serverCoins.sort()
@@ -891,6 +940,11 @@ async function checkServerCoinsSync() {
         if (idx !== -1) internalCoins.value.splice(idx, 1)
         const rowIdx = tableData.findIndex((r) => r.coin === coin)
         if (rowIdx !== -1) tableData.splice(rowIdx, 1)
+        
+        // user 模式：同时从 localStorage 中删除
+        if (props.currentUser) {
+          removeUserCoin(coin)
+        }
       })
       
       // 添加新币种
@@ -937,6 +991,11 @@ async function addCoin(value) {
   
   return axios.post(endpoint, { coin: value })
     .then(async () => {
+      // user 模式：保存到 localStorage
+      if (props.currentUser) {
+        addUserCoin(value)
+      }
+      
       // 只添加新币到现有表格，保持历史数据
       if (!internalCoins.value.includes(value)) {
         internalCoins.value.push(value)
@@ -1077,8 +1136,13 @@ const actionColumn = {
   key: 'actions',
   fixed: 'right',
   width: CELL_WIDTH,
-  render: (row) =>
-    h(
+  render: (row) => {
+    // user 模式：不显示删除按钮
+    if (props.currentUser) {
+      return null
+    }
+    
+    return h(
       NButton,
       {
         size: 'small',
@@ -1087,6 +1151,7 @@ const actionColumn = {
       },
       { default: () => '删除' }
     )
+  }
 }
 
 // 币种列定义

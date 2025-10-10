@@ -2,10 +2,10 @@
   <n-layout>
     
      <n-layout-content style="padding: 0px; padding-bottom: 60px;">
-      <!-- 管理员模式：显示两个tab -->
-      <div v-if="isAdminMode">
-        <!-- 自定义Tab导航 -->
-        <div class="custom-tabs">
+      <!-- 管理员面板区域 -->
+      <div>
+        <!-- 完整管理员：显示Tab导航 -->
+        <div v-if="showUserManagement" class="custom-tabs">
           <div class="tab-nav">
             <div 
               class="tab-nav-item" 
@@ -27,10 +27,13 @@
           <div class="tab-content-wrapper">
             <!-- 管理员表格 Tab -->
             <div v-show="activeTab === 'admin-table'" class="tab-content">
-              <h3 style="color: #1890ff; margin-bottom: 5px;">管理员面板</h3>
+              <h3 v-if="showUserManagement" style="color: #1890ff; margin-bottom: 5px;">
+                管理员面板
+              </h3>
               <CoinTable 
                 ref="adminTableRef"
                 api-prefix="/admin"
+                :current-user="currentUser"
                 @coin-added="onAdminCoinAdded"
                 @notification-added="onNotificationAdded"
               />
@@ -42,6 +45,18 @@
               <UserManagement />
             </div>
           </div>
+        </div>
+        
+        <!-- 普通用户或无参数：直接显示管理员表格，不显示Tab -->
+        <div v-else>
+          <h3 style="color: #1890ff; margin-bottom: 5px;">用户分面板</h3>
+          <CoinTable 
+            ref="adminTableRef"
+            api-prefix="/admin"
+            :current-user="currentUser"
+            @coin-added="onAdminCoinAdded"
+            @notification-added="onNotificationAdded"
+          />
         </div>
       </div>
 
@@ -60,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V5.2</span>
+        <span class="footer-title">动态表格 V6.0</span>
       </div>
     </n-layout-footer>
     
@@ -78,20 +93,31 @@ const emit = defineEmits(['notification-added'])
 
 const coinTableRef = ref(null)
 const adminTableRef = ref(null)
-const isAdminMode = ref(false)
+const showUserManagement = ref(false) // 是否显示用户管理Tab (admin=true 时为 true)
+const currentUser = ref('') // 当前用户名（user=xxx 时有值，admin=true 时为空）
 const activeTab = ref('admin-table') // 默认激活管理员表格tab
 
-// 检查URL参数或localStorage来确定是否为管理员模式
+// 检查URL参数来确定权限模式
 onMounted(() => {
   const urlParams = new URLSearchParams(window.location.search)
   const adminParam = urlParams.get('admin')
+  const userParam = urlParams.get('user')
   
   if (adminParam === 'true') {
-    isAdminMode.value = true
-    localStorage.setItem('isAdmin', 'true')
+    // admin=true: 完整管理员模式
+    showUserManagement.value = true
+    currentUser.value = ''
+    localStorage.setItem('currentUser', '')
+  } else if (userParam) {
+    // user=xxx: 普通用户模式
+    showUserManagement.value = false
+    currentUser.value = userParam
+    localStorage.setItem('currentUser', userParam)
   } else {
-    const storedAdmin = localStorage.getItem('isAdmin')
-    isAdminMode.value = storedAdmin === 'true'
+    // 无参数：从 localStorage 恢复
+    const storedUser = localStorage.getItem('currentUser')
+    currentUser.value = storedUser || ''
+    showUserManagement.value = !storedUser // 空字符串表示管理员
   }
 })
 
