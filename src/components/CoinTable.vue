@@ -139,7 +139,7 @@ function triggerThresholdWarning(coin, timestamp, type, actualValue, threshold) 
       return `${value.toFixed(1)}万`
     } else {
       if (value >= 1e8) {
-        return `${(value / 1e8).toFixed(1)}亿`
+        return `${(value / 1e8).toFixed(2)}亿`
       } else if (value >= 1e4) {
         return `${(value / 1e4).toFixed(1)}万`
       } else {
@@ -322,7 +322,7 @@ function parseDisplayToNumber(v) {
 function formatDisplayNumber(amount) {
   const num = Number(amount) || 0
   if (num >= 1e8) {
-    return (num / 1e8).toFixed(1) + '亿'
+    return (num / 1e8).toFixed(2) + '亿'
   }
   if (num >= 1e4) {
     return (num / 1e4).toFixed(1) + '万'
