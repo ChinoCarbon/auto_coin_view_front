@@ -379,34 +379,64 @@
           <span class="form-tip">范围: 1x - {{ maxLeverage }}x</span>
         </n-form-item>
         
-        <n-form-item label="USDT金额">
-          <n-input-number 
-            v-model:value="batchOrderForm.usdtAmount" 
-            :min="1"
-            :precision="2"
-            placeholder="输入USDT金额"
-          />
-          <span class="form-tip">USDT</span>
+        <n-form-item label="仓位百分比">
+          <div style="width: 100%;">
+            <n-slider 
+              v-model:value="batchOrderForm.positionPercentage" 
+              :min="1"
+              :max="100"
+              :step="1"
+              :marks="{ 25: '25%', 50: '50%', 75: '75%', 100: '100%' }"
+              :tooltip="true"
+              style="margin-bottom: 20px;"
+            />
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px;">
+              <n-input-number 
+                v-model:value="batchOrderForm.positionPercentage" 
+                :min="1"
+                :max="100"
+                :precision="0"
+                size="small"
+                style="width: 120px;"
+              >
+                <template #suffix>
+                  %
+                </template>
+              </n-input-number>
+            </div>
+            <div style="margin-top: 8px;">
+              <span class="form-tip">每个用户将使用可用余额的 {{ batchOrderForm.positionPercentage }}%</span>
+            </div>
+          </div>
         </n-form-item>
         
-        <n-alert type="info" style="margin-bottom: 16px;">
-          每个用户将使用相同的USDT金额和交易参数进行下单
-        </n-alert>
-        
-        <n-form-item v-if="selectedUsers.length > 0" label="下单预览">
+        <n-form-item v-if="selectedUsers.length > 0 && batchOrderForm.symbol" label="下单预览">
           <div class="order-preview">
             <div 
               v-for="userId in selectedUsers" 
               :key="userId"
               class="preview-item"
             >
-              <span class="user-name">{{ users.find(u => u.id === userId)?.alias }}</span>
-              <span class="order-details">
-                {{ batchOrderForm.symbol }} {{ batchOrderForm.side === 'BUY' ? '开多' : '开空' }} 
-                ${{ batchOrderForm.usdtAmount }} USDT
-                @ {{ batchOrderForm.orderType === 'MARKET' ? '市价' : batchOrderForm.price }}
-                ({{ batchOrderForm.leverage }}x)
-              </span>
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <div style="font-weight: bold; color: #1890ff;">{{ getUserById(userId)?.alias }}</div>
+                <div style="font-size: 13px;">
+                  <span style="color: #666;">交易对:</span> {{ batchOrderForm.symbol }}
+                  <span style="color: #666; margin-left: 12px;">方向:</span> 
+                  <span :style="{ color: batchOrderForm.side === 'BUY' ? '#52c41a' : '#f5222d', fontWeight: 'bold' }">
+                    {{ batchOrderForm.side === 'BUY' ? '开多' : '开空' }}
+                  </span>
+                </div>
+                <div style="font-size: 13px;">
+                  <span style="color: #666;">下单金额:</span> 
+                  <span style="font-weight: bold; color: #1890ff;">${{ calculateUserOrderAmount(userId).toFixed(2) }} USDT</span>
+                  <span style="color: #999; margin-left: 8px;">(余额 ${{ (getUserById(userId)?.availableBalance || 0).toFixed(2) }} × {{ batchOrderForm.positionPercentage }}%)</span>
+                </div>
+                <div style="font-size: 13px;">
+                  <span style="color: #666;">价格:</span> {{ batchOrderForm.orderType === 'MARKET' ? '市价' : '$' + batchOrderForm.price }}
+                  <span style="color: #666; margin-left: 12px;">杠杆:</span> 
+                  <span style="font-weight: bold;">{{ batchOrderForm.leverage }}x</span>
+                </div>
+              </div>
             </div>
           </div>
         </n-form-item>
@@ -832,7 +862,7 @@ const batchOrderForm = ref({
   orderType: 'MARKET',
   price: null,
   leverage: 1,
-  usdtAmount: 100,
+  positionPercentage: 50, // 仓位百分比，默认50%
   takeProfitPrice: null,
   stopLossPrice: null
 })
@@ -1211,6 +1241,11 @@ async function fetchAllPositions() {
       
       // 更新最后更新时间
       lastUpdateTime.value = new Date()
+      
+      // 重新启动WebSocket订阅（确保新仓位的币种也被订阅）
+      if (autoRefresh.value) {
+        startWebSocketSubscription()
+      }
     }
   } catch (error) {
     console.error('获取仓位数据失败:', error)
@@ -1715,6 +1750,21 @@ function openBatchOrderModal() {
   loadAvailableSymbols()
 }
 
+// 根据用户ID获取用户对象
+function getUserById(userId) {
+  return users.value.find(u => u.id === userId)
+}
+
+// 计算用户实际下单金额（基于可用余额和百分比）
+function calculateUserOrderAmount(userId) {
+  const user = getUserById(userId)
+  if (!user || !user.availableBalance) return 0
+  
+  // 可用余额 × 百分比
+  const amount = (user.availableBalance * batchOrderForm.value.positionPercentage) / 100
+  return amount
+}
+
 async function loadAvailableSymbols() {
   try {
     symbolsLoading.value = true
@@ -1825,8 +1875,8 @@ async function submitBatchOrder() {
     return
   }
   
-  if (!batchOrderForm.value.usdtAmount || batchOrderForm.value.usdtAmount <= 0) {
-    alert('请输入有效的USDT金额')
+  if (!batchOrderForm.value.positionPercentage || batchOrderForm.value.positionPercentage <= 0) {
+    alert('请输入有效的仓位百分比')
     return
   }
   
@@ -1845,11 +1895,18 @@ async function submitBatchOrder() {
         throw new Error(`用户 ${userId} 不存在`)
       }
       
+      // 根据用户的可用余额和百分比计算实际USDT金额
+      const userUsdtAmount = calculateUserOrderAmount(userId)
+      
+      if (userUsdtAmount <= 0) {
+        throw new Error(`用户 ${user.alias} 的可用余额不足`)
+      }
+      
       // 构建订单数据
       const orderData = {
         symbol: batchOrderForm.value.symbol,
         side: batchOrderForm.value.side,
-        quantity: batchOrderForm.value.usdtAmount, // USDT金额放到quantity字段
+        quantity: userUsdtAmount, // 使用计算出的USDT金额
         leverage: batchOrderForm.value.leverage,
         order_type: batchOrderForm.value.orderType,
         price: batchOrderForm.value.orderType === 'LIMIT' ? batchOrderForm.value.price : null
