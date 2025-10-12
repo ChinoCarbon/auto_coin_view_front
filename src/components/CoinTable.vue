@@ -478,8 +478,30 @@ async function fetchCoinInfo(coin) {
     
     const res = await axios.get(endpoint)
     const data = res.data
-    if (data && data.series && Array.isArray(data.series) && data.series.length > 0) {
-      // 取第一个数据点作为起始时间和价格
+    
+    // 检查后端返回的 time 字段
+    if (data.time === 'new') {
+      // 新添加的币，不设置基准，等待第一次实时数据
+      console.log(`${coin} 标记为新币，不设置基准`)
+      return null
+    }
+    
+    // 如果有具体时间，使用该时间对应的数据点作为基准
+    if (data.time && data.series && Array.isArray(data.series)) {
+      const targetPoint = data.series.find(([timestamp, price]) => timestamp === data.time)
+      if (targetPoint) {
+        const [time, price] = targetPoint
+        console.log(`${coin} 使用后端指定的基准时间: ${time}, 价格: ${price}`)
+        return {
+          time: time,
+          value: formatDisplayNumber(price),
+          baseline: price
+        }
+      }
+    }
+    
+    // 兼容旧版本：如果没有 time 字段，使用第一个数据点
+    if (data.series && Array.isArray(data.series) && data.series.length > 0) {
       const firstPoint = data.series[0]
       if (Array.isArray(firstPoint) && firstPoint.length >= 2) {
         const [time, price] = firstPoint
@@ -490,13 +512,14 @@ async function fetchCoinInfo(coin) {
         }
       }
     }
+    
     return null
   } catch (err) {
     return null
   }
 }
 
-// 加载新币的历史数据（从添加时间点往前1小时）
+// 加载新币的历史数据
 async function loadNewCoinHistoricalData(row) {
   try {
     console.log(`开始加载币种 ${row.coin} 的历史数据...`)
@@ -511,26 +534,11 @@ async function loadNewCoinHistoricalData(row) {
     if (data && data.series && Array.isArray(data.series)) {
       console.log(`获取到 ${row.coin} 的历史数据:`, data.series.length, '条记录')
       
-      // 计算1小时前的时间点
-      const now = new Date()
-      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
-      
-      // 过滤出最近1小时的数据
-      const recentData = data.series.filter(([timestamp, price]) => {
-        // 假设时间戳格式为 "HH:mm:ss" 或 "LHH:mm:ss"
-        const timeStr = timestamp.replace(/^L/, '')
-        const [hours, minutes, seconds] = timeStr.split(':').map(Number)
-        const dataTime = new Date()
-        dataTime.setHours(hours, minutes, seconds, 0)
-        
-        // 如果数据时间在今天且在1小时内
-        return dataTime >= oneHourAgo && dataTime <= now
-      })
-      
-      console.log(`过滤后 ${row.coin} 的最近1小时数据:`, recentData.length, '条记录')
+      // 加载全部历史数据（不再限制1小时）
+      console.log(`加载全部历史数据:`, data.series.length, '条记录')
       
       // 将历史数据填充到行中
-      recentData.forEach(([timestamp, price]) => {
+      data.series.forEach(([timestamp, price]) => {
         // 确保时间戳在 timeColumns 中
         if (!timeColumns.value.includes(timestamp)) {
           timeColumns.value.push(timestamp)
@@ -845,6 +853,16 @@ async function refreshTable() {
         row._needsReload = false // 清除标记
       }
       
+      // 如果 _firstCapture 不存在且有有效数据，设置基准（首次数据）
+      if (!row._firstCapture && raw > 0) {
+        row._firstCapture = {
+          time: timestamp,
+          value: display,
+          baseline: raw
+        }
+        console.log(`${row.coin} 首次数据，设置基准时间: ${timestamp}, 基准价格: ${raw}`)
+      }
+      
       // 计算相对首次值的涨跌百分比
       if (row._firstCapture && raw > 0) {
         const baseline = typeof row._firstCapture.baseline === 'number' && isFinite(row._firstCapture.baseline)
@@ -865,7 +883,11 @@ async function refreshTable() {
     const serverCoins = await fetchPoolCoins()
     await rebuildTableForCoins(serverCoins)
     await restoreHistoricalData()
-    return // 重新加载后直接返回，不继续执行后续逻辑
+    
+    // 立即再调用一次 refreshTable，为新币设置 _firstCapture
+    // 第二次调用时 needsReload = false，会正常执行设置逻辑
+    await refreshTable()
+    return
   }
 
   // 添加新时间戳列（去重后）
