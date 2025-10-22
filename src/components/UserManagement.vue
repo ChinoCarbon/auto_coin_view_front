@@ -206,14 +206,24 @@
               <div class="tab-content">
                 <div class="orders-header">
                   <h4>当前挂单</h4>
-                  <n-button 
-                    size="small" 
-                    type="primary" 
-                    :loading="ordersLoading"
-                    @click="refreshOrders"
-                  >
-                    刷新挂单
-                  </n-button>
+                  <div class="header-actions">
+                    <n-button 
+                      size="small" 
+                      type="primary" 
+                      :loading="ordersLoading"
+                      @click="refreshOrders"
+                    >
+                      刷新挂单
+                    </n-button>
+                    <n-button 
+                      size="small" 
+                      type="error" 
+                      @click="cancelAllOrders(user)"
+                      class="cancel-all-btn"
+                    >
+                      撤销全部
+                    </n-button>
+                  </div>
                 </div>
                 
                 <div class="orders-list">
@@ -276,6 +286,15 @@
                           >
                             撤单
                           </n-button>
+                          <n-button 
+                            size="small" 
+                            type="warning" 
+                            :disabled="order.status !== 'NEW'"
+                            @click="batchCancelOrder(order)"
+                            class="batch-cancel-btn"
+                          >
+                            批量撤单
+                          </n-button>
                         </div>
                       </div>
                     </div>
@@ -300,7 +319,12 @@
     <n-modal v-model:show="showBatchOrderModal" preset="dialog" title="批量下单" size="large">
       <n-form :model="batchOrderForm" label-placement="left" label-width="120px">
         <n-form-item label="选择用户">
-          <n-checkbox-group v-model:value="selectedUsers">
+          <div style="margin-bottom: 12px;">
+            <n-checkbox v-model:checked="useAllUsers" @update:checked="onAllUsersChange">
+              全部用户下单
+            </n-checkbox>
+          </div>
+          <n-checkbox-group v-model:value="selectedUsers" :disabled="useAllUsers">
             <n-checkbox 
               v-for="user in users" 
               :key="user.id" 
@@ -410,10 +434,10 @@
           </div>
         </n-form-item>
         
-        <n-form-item v-if="selectedUsers.length > 0 && batchOrderForm.symbol" label="下单预览">
+        <n-form-item v-if="((useAllUsers && users.length > 0) || selectedUsers.length > 0) && batchOrderForm.symbol" label="下单预览">
           <div class="order-preview">
             <div 
-              v-for="userId in selectedUsers" 
+              v-for="userId in (useAllUsers ? users.map(u => u.id) : selectedUsers)" 
               :key="userId"
               class="preview-item"
             >
@@ -856,6 +880,7 @@ const lastUpdateTime = ref(null)
 const showBatchOrderModal = ref(false)
 const batchOrderLoading = ref(false)
 const selectedUsers = ref([])
+const useAllUsers = ref(false)
 const batchOrderForm = ref({
   symbol: '',
   side: 'BUY',
@@ -1453,149 +1478,90 @@ function updatePositionPrices(symbol, currentPrice) {
 
 // 启动WebSocket价格订阅
 function startWebSocketSubscription() {
-  console.log('📊 当前用户数量:', users.value.length)
-  console.log('📊 当前仓位数量:', users.value.reduce((total, user) => total + user.positions.length, 0))
-  
-  if (wsConnection) {
-    wsConnection.close()
-  }
-  
-  // 获取所有需要订阅的交易对
+  // 收集所有要订阅的 symbol
   const symbols = new Set()
   users.value.forEach(user => {
-    user.positions.forEach(position => {
-      if (position.symbol) {
-        symbols.add(position.symbol.toLowerCase())
-      }
+    user.positions.forEach(pos => {
+      if (pos.symbol) symbols.add(pos.symbol.toLowerCase())
     })
   })
-  
-  
+
   if (symbols.size === 0) {
+    console.log('📭 没有仓位需要订阅 WebSocket')
     return
   }
-  
-  // 连接币安WebSocket（全市场ticker流）
-  wsConnection = new WebSocket('wss://fstream.binance.com/ws/!ticker@arr')
-  
+
+  // 生成多流订阅 URL（示例：btcusdt@ticker/ethusdt@ticker）
+  const streams = Array.from(symbols).map(s => `${s}@ticker`).join('/')
+  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+
+  console.log('🔗 启动 WebSocket 订阅:', wsUrl)
+
+  // 如果已有连接存在，先安全关闭
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    try {
+      wsConnection.close(1000, 'restart')
+    } catch (_) {}
+  }
+
+  wsConnection = new WebSocket(wsUrl)
+
   wsConnection.onopen = () => {
-    
-    // 启动心跳检测
+    console.log('✅ WebSocket 已连接')
+    wsLastMessageTime = Date.now()
     startHeartbeat()
   }
-  
+
   wsConnection.onmessage = (event) => {
-    // 更新最后接收消息时间
     wsLastMessageTime = Date.now()
-    
     try {
-      const data = JSON.parse(event.data)
-      
-      if (Array.isArray(data)) {
-        let processedCount = 0
-        let relevantCount = 0
-        
-        data.forEach(ticker => {
-          if (ticker.s && ticker.c) {
-            const symbol = ticker.s.toLowerCase()
-            if (symbols.has(symbol)) {
-              const price = parseFloat(ticker.c)
-              console.log(`💰 处理相关价格: ${ticker.s} = $${price}`)
-              updatePositionPrices(ticker.s, price)
-              processedCount++
-            }
-            relevantCount++
-          }
-        })
-        
-        console.log(`✅ 处理了 ${processedCount} 个相关价格，总共 ${relevantCount} 个有效价格`)
-      } else {
-        console.log('⚠️ 收到非数组数据:', typeof data, data)
+      const payload = JSON.parse(event.data)
+      const ticker = payload?.data
+      if (ticker?.s && ticker?.c) {
+        const price = parseFloat(ticker.c)
+        updatePositionPrices(ticker.s, price)
       }
-    } catch (error) {
-      console.error('❌ WebSocket消息解析错误:', error)
-      console.error('原始数据长度:', event.data?.length)
-      console.error('原始数据前100字符:', event.data?.substring(0, 100))
+    } catch (err) {
+      console.warn('⚠️ WebSocket 消息解析错误:', err)
     }
   }
-  
-  wsConnection.onclose = (event) => {
-    console.log('关闭代码:', event.code)
-    console.log('关闭原因:', event.reason)
-    console.log('是否正常关闭:', event.wasClean)
-    
-    // 停止心跳检测
-    stopHeartbeat()
-    
-    // 5秒后重连
-    setTimeout(() => {
-      if (autoRefresh.value) {
-        startWebSocketSubscription()
-      } else {
-        console.log('⏸️ 自动刷新已关闭，跳过重连')
-      }
-    }, 5000)
-  }
-  
+
   wsConnection.onerror = (error) => {
-    console.error('❌ WebSocket连接错误:', error)
-    console.error('错误类型:', error.type)
-    console.error('错误目标状态:', error.target?.readyState)
+    console.error('❌ WebSocket 错误:', error)
+  }
+
+  wsConnection.onclose = (event) => {
+    console.log(`🔌 WebSocket 关闭: code=${event.code}, reason=${event.reason}`)
+    stopHeartbeat()
+    // 断线自动重连（5 秒后）
+    if (autoRefresh.value) {
+      setTimeout(() => startWebSocketSubscription(), 5000)
+    }
   }
 }
 
-// 自动刷新控制（现在只控制WebSocket）
-function startAutoRefresh() {
-  
-  if (refreshInterval.value) {
-    clearInterval(refreshInterval.value)
-  }
-  
-  if (autoRefresh.value) {
-    // 启动WebSocket订阅
-    startWebSocketSubscription()
-  } else {
-    console.log('⏸️ 自动刷新已关闭')
-  }
-}
-
-// 启动心跳检测
+// 🫀 启动心跳检测（每 20 s ping 一次，60 s 超时）
 function startHeartbeat() {
-  wsLastMessageTime = Date.now()
-  
-  if (wsHeartbeatInterval) {
-    clearInterval(wsHeartbeatInterval)
-  }
-  
+  stopHeartbeat()
   wsHeartbeatInterval = setInterval(() => {
+    if (!wsConnection) return
     const now = Date.now()
-    const timeSinceLastMessage = now - wsLastMessageTime
-    
-    
-    // 如果超过30秒没有收到消息，认为连接已断开
-    if (timeSinceLastMessage > 30000) {
-      
-      if (wsConnection) {
-        wsConnection.close()
-      }
-      
-      // 立即重连
-      if (autoRefresh.value) {
-        startWebSocketSubscription()
-      }
+    const idle = now - wsLastMessageTime
+
+    // 发送心跳包（部分客户端不会触发真正 ping/pong，作用是保持活动）
+    if (wsConnection.readyState === WebSocket.OPEN) {
+      try { wsConnection.send('ping') } catch (_) {}
     }
-    
-    // 检查连接状态
-    if (wsConnection && wsConnection.readyState !== WebSocket.OPEN) {
-      
-      if (autoRefresh.value) {
-        startWebSocketSubscription()
-      }
+
+    // 超过 60 s 未收到消息则判定断线
+    if (idle > 60000) {
+      console.warn('💔 WebSocket 心跳超时，尝试重连...')
+      try { wsConnection.close(4000, 'heartbeat timeout') } catch (_) {}
     }
-  }, 10000) // 每10秒检查一次
+  }, 20000)
 }
 
-// 停止心跳检测
+// 🛑 停止心跳检测
 function stopHeartbeat() {
   if (wsHeartbeatInterval) {
     clearInterval(wsHeartbeatInterval)
@@ -1603,133 +1569,153 @@ function stopHeartbeat() {
   }
 }
 
-// 手动测试WebSocket连接
-function testWebSocketConnection() {
-  
-  if (wsConnection) {
-    if (wsConnection.readyState === WebSocket.OPEN) {
-    } else {
-      startWebSocketSubscription()
-    }
-  } else {
+// ▶️ 启动自动刷新（开启 WebSocket）
+function startAutoRefresh() {
+  if (refreshInterval.value) clearInterval(refreshInterval.value)
+  if (autoRefresh.value) {
     startWebSocketSubscription()
+  } else {
+    console.log('⏸️ 自动刷新已关闭')
   }
 }
 
+// ⏹️ 停止自动刷新（关闭 WebSocket）
 function stopAutoRefresh() {
   if (refreshInterval.value) {
     clearInterval(refreshInterval.value)
     refreshInterval.value = null
   }
-  
   if (wsConnection) {
-    wsConnection.close()
+    try { wsConnection.close(1000, 'manual stop') } catch (_) {}
     wsConnection = null
   }
+  stopHeartbeat()
 }
 
+// 🔄 切换自动刷新状态
 function toggleAutoRefresh(value) {
   autoRefresh.value = value
-  if (value) {
-    startAutoRefresh()
-  } else {
-    stopAutoRefresh()
-  }
+  if (value) startAutoRefresh()
+  else stopAutoRefresh()
 }
 
-// 强制刷新所有数据
+// 🔧 强制刷新所有数据并重建订阅
 async function forceRefresh() {
-  console.log('强制刷新所有数据...')
+  console.log('🔁 强制刷新所有数据...')
   await fetchUsers()
   await fetchAllPositions()
   await fetchAllOrders()
-  
-  // 刷新后重新启动WebSocket订阅
-  if (autoRefresh.value) {
-    startWebSocketSubscription()
-  }
+  if (autoRefresh.value) startWebSocketSubscription()
 }
 
-// 只刷新仓位数据
+// 🔧 仅刷新仓位并重建订阅
 async function refreshPositions() {
-  console.log('刷新仓位数据...')
+  console.log('📈 刷新仓位数据...')
   await fetchAllPositions()
   lastUpdateTime.value = new Date()
-  console.log('仓位刷新完成')
-  
-  // 重新启动WebSocket订阅（基于新的原始数据）
-  if (autoRefresh.value) {
-    startWebSocketSubscription()
+  if (autoRefresh.value) startWebSocketSubscription()
+}
+
+// 🔧 仅刷新挂单数据
+async function refreshOrders() {
+  console.log('📋 刷新挂单数据...')
+  await fetchAllOrders()
+}
+
+// 批量撤单功能
+function batchCancelOrder(order) {
+  console.log('批量撤单功能待实现:', order)
+  // TODO: 实现批量撤单逻辑
+}
+
+// 撤销全部功能 - 撤销指定用户的所有订单
+async function cancelAllOrders(user) {
+  try {
+    console.log('开始撤销用户的所有订单:', user.name)
+    
+    if (!user) {
+      alert('用户信息无效')
+      return
+    }
+    
+    // 收集该用户的所有NEW状态订单
+    const ordersToCancel = []
+    
+    if (user.orders && user.orders.length > 0) {
+      user.orders.forEach(order => {
+        if (order.status === 'NEW') {
+          ordersToCancel.push({
+            user_id: user.id,
+            symbol: order.symbol,
+            orderId: order.orderId
+          })
+        }
+      })
+    }
+    
+    if (ordersToCancel.length === 0) {
+      alert('该用户没有可撤销的订单')
+      return
+    }
+    
+    // 准备API请求参数
+    const requestData = {
+      orders: ordersToCancel
+    }
+    
+    console.log('发送撤销全部请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_by_id`, requestData)
+    
+    console.log('撤销全部响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      alert(`撤销全部成功！共撤销 ${ordersToCancel.length} 个订单`)
+      
+      // 刷新挂单数据
+      await fetchAllOrders()
+    } else {
+      throw new Error(response.data?.message || '撤销全部失败')
+    }
+  } catch (error) {
+    console.error('撤销全部失败:', error)
+    const errorMessage = error.response?.data?.message || error.message || '撤销全部失败'
+    alert('撤销全部失败: ' + errorMessage)
   }
 }
 
-// 只刷新挂单数据
-async function refreshOrders() {
-  console.log('刷新挂单数据...')
-  await fetchAllOrders()
-  console.log('挂单刷新完成')
-}
-
-// 撤单功能
+// 撤单功能 - 撤销单个订单
 async function cancelOrder(order) {
   try {
     console.log('开始撤单:', order)
     
-    // 准备API请求参数
-    const requestData = {
-      symbol: order.symbol,
-      position_side: order.positionSide,
-      order_type: order.type,
-      side: order.side,
-      use_testnet: false
+    // 获取用户ID
+    const userId = users.value.find(u => u.orders?.some(o => o.id === order.id))?.id
+    if (!userId) {
+      throw new Error('未找到用户ID')
     }
     
-    // 根据订单类型添加价格参数
-    if (order.stopPrice && order.stopPrice > 0) {
-      requestData.stop_price = order.stopPrice
-    }
-    if (order.price && order.price > 0) {
-      requestData.price = order.price
+    // 准备API请求参数 - 只撤销这一个订单
+    const requestData = {
+      orders: [
+        {
+          user_id: userId,
+          symbol: order.symbol,
+          orderId: order.orderId
+        }
+      ]
     }
     
     console.log('发送撤单请求:', requestData)
     
     // 调用后端API
-    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel`, requestData)
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_by_id`, requestData)
     
     console.log('撤单响应:', response.data)
     
     if (response.data && response.data.success) {
-      const data = response.data.data
-      
-      // 显示成功信息
-      let successMessage = `撤单成功！\n`
-      successMessage += `交易对: ${data.symbol}\n`
-      successMessage += `仓位方向: ${data.position_side}\n`
-      successMessage += `订单类型: ${data.order_type}\n`
-      successMessage += `订单方向: ${data.side}\n`
-      successMessage += `总用户数: ${data.total_users}\n`
-      successMessage += `有订单的用户: ${data.users_with_orders}\n`
-      successMessage += `成功撤单: ${data.successful_cancels}\n`
-      successMessage += `失败撤单: ${data.failed_cancels}\n\n`
-      
-      // 显示每个用户的撤单结果
-      data.results.forEach((result, index) => {
-        successMessage += `用户${index + 1} (${result.alias}):\n`
-        successMessage += `  匹配订单数: ${result.matching_orders_count}\n`
-        successMessage += `  成功撤单: ${result.successful_cancels}\n`
-        successMessage += `  状态: ${result.success ? '成功' : '失败'}\n`
-        successMessage += `  消息: ${result.message}\n`
-        if (result.cancel_results && result.cancel_results.length > 0) {
-          successMessage += `  订单详情:\n`
-          result.cancel_results.forEach(cancelResult => {
-            successMessage += `    订单ID: ${cancelResult.order_id}, 状态: ${cancelResult.status}\n`
-          })
-        }
-        successMessage += '\n'
-      })
-      
-      alert(successMessage)
+      alert('撤单成功！')
       
       // 刷新挂单数据
       await fetchAllOrders()
@@ -1747,7 +1733,16 @@ async function cancelOrder(order) {
 function openBatchOrderModal() {
   showBatchOrderModal.value = true
   selectedUsers.value = []
+  useAllUsers.value = false
   loadAvailableSymbols()
+}
+
+// 处理全部用户选择变化
+function onAllUsersChange(checked) {
+  if (checked) {
+    selectedUsers.value = []
+  }
+  // 当取消全部用户选择时，保持selectedUsers不变，让用户手动选择
 }
 
 // 根据用户ID获取用户对象
@@ -1865,8 +1860,13 @@ async function onSymbolChange(symbol) {
 }
 
 async function submitBatchOrder() {
-  if (selectedUsers.value.length === 0) {
-    alert('请选择至少一个用户')
+  if (!useAllUsers.value && selectedUsers.value.length === 0) {
+    alert('请选择至少一个用户或选择全部用户')
+    return
+  }
+  
+  if (useAllUsers.value && users.value.length === 0) {
+    alert('没有可用的用户')
     return
   }
   
@@ -1888,133 +1888,128 @@ async function submitBatchOrder() {
   try {
     batchOrderLoading.value = true
     
-    // 为每个用户创建订单
-    const orderPromises = selectedUsers.value.map(async (userId) => {
-      const user = users.value.find(u => u.id === userId)
-      if (!user) {
-        throw new Error(`用户 ${userId} 不存在`)
-      }
-      
-      // 根据用户的可用余额和百分比计算实际USDT金额
-      const userUsdtAmount = calculateUserOrderAmount(userId)
-      
-      if (userUsdtAmount <= 0) {
-        throw new Error(`用户 ${user.alias} 的可用余额不足`)
-      }
-      
-      // 构建订单数据
-      const orderData = {
-        symbol: batchOrderForm.value.symbol,
-        side: batchOrderForm.value.side,
-        quantity: userUsdtAmount, // 使用计算出的USDT金额
-        leverage: batchOrderForm.value.leverage,
-        order_type: batchOrderForm.value.orderType,
-        price: batchOrderForm.value.orderType === 'LIMIT' ? batchOrderForm.value.price : null
-      }
-      
-      // 添加止盈止损价格（如果设置了）
-      if (batchOrderForm.value.takeProfitPrice) {
-        orderData.take_profit_price = batchOrderForm.value.takeProfitPrice
-      }
-      if (batchOrderForm.value.stopLossPrice) {
-        orderData.stop_loss_price = batchOrderForm.value.stopLossPrice
-      }
-      
-      const requestData = {
-        user_id: userId,
-        orders: [orderData]
-      }
-      
-      console.log(`用户 ${user.alias} 下单请求:`, requestData)
-      
-      return axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/batch`, requestData)
-    })
+    // 确定position_side
+    const positionSide = batchOrderForm.value.side === 'BUY' ? 'LONG' : 'SHORT'
     
-    // 等待所有订单请求完成
-    const results = await Promise.allSettled(orderPromises)
+    // 计算每个用户的USDT金额
+    let userIds, quantities
+    if (useAllUsers.value) {
+      // 全部用户：计算所有用户的金额
+      userIds = users.value.map(user => user.id)
+      quantities = users.value.map(user => {
+        const amount = (user.availableBalance || 0) * batchOrderForm.value.positionPercentage / 100
+        return Math.round(amount * 100) / 100
+      })
+    } else {
+      // 部分用户：计算选中用户的金额
+      userIds = selectedUsers.value
+      quantities = selectedUsers.value.map(userId => {
+        const amount = calculateUserOrderAmount(userId)
+        return Math.round(amount * 100) / 100
+      })
+    }
     
-    console.log('批量下单结果:', results)
+    // 构建请求数据
+    const requestData = {
+      symbol: batchOrderForm.value.symbol,
+      side: batchOrderForm.value.side,
+      position_side: positionSide,
+      user_ids: userIds,
+      quantities: quantities,
+      leverage: batchOrderForm.value.leverage,
+      type: batchOrderForm.value.orderType,
+      use_testnet: false
+    }
     
-    // 统计成功和失败的数量
-    let successCount = 0
-    let failedCount = 0
-    const failedUsers = []
-    const successDetails = []
+    // 全部用户模式添加all_users字段
+    if (useAllUsers.value) {
+      requestData.all_users = true
+    }
     
-    results.forEach((result, index) => {
-      const userId = selectedUsers.value[index]
-      const user = users.value.find(u => u.id === userId)
+    // 添加限价单价格
+    if (batchOrderForm.value.orderType === 'LIMIT' && batchOrderForm.value.price) {
+      requestData.price = batchOrderForm.value.price.toString()
+    }
+    
+    // 添加止盈止损价格
+    if (batchOrderForm.value.takeProfitPrice) {
+      requestData.take_profit_price = batchOrderForm.value.takeProfitPrice.toString()
+    }
+    if (batchOrderForm.value.stopLossPrice) {
+      requestData.stop_loss_price = batchOrderForm.value.stopLossPrice.toString()
+    }
+    
+    console.log('批量下单请求:', requestData)
+    
+    // 调用新的API接口
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/batch_all`, requestData)
+    
+    console.log('批量下单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
       
-      if (result.status === 'fulfilled' && result.value.data && result.value.data.success) {
-        successCount++
-        successDetails.push({
-          user: user?.alias || `用户${index + 1}`,
-          data: result.value.data
-        })
-      } else {
-        failedCount++
-        failedUsers.push({
-          user: user?.alias || `用户${index + 1}`,
-          error: result.status === 'rejected' ? result.reason?.response?.data?.message || result.reason?.message : '未知错误'
-        })
-      }
-    })
-    
-    // 显示详细结果
-    let resultMessage = `批量下单完成！\n成功: ${successCount}个，失败: ${failedCount}个\n\n`
-    
-    if (successDetails.length > 0) {
-      resultMessage += '成功详情:\n'
-      successDetails.forEach(detail => {
-        const data = detail.data.data
-        resultMessage += `• ${detail.user}:\n`
-        resultMessage += `  总订单数: ${data.total_orders}\n`
-        resultMessage += `  成功订单: ${data.successful_orders}\n`
-        resultMessage += `  失败订单: ${data.failed_orders}\n`
-        
-        // 显示每个订单的详细信息
-        if (data.results && data.results.length > 0) {
-          data.results.forEach((orderResult, orderIndex) => {
-            resultMessage += `  订单${orderIndex + 1}:\n`
-            resultMessage += `    交易对: ${orderResult.symbol}\n`
-            resultMessage += `    方向: ${orderResult.side === 'BUY' ? '开多' : '开空'}\n`
-            resultMessage += `    数量: ${orderResult.coin_quantity} ${orderResult.symbol.replace('USDT', '')}\n`
-            resultMessage += `    USDT金额: ${orderResult.usdt_quantity}\n`
-            resultMessage += `    杠杆: ${orderResult.leverage}x\n`
-            resultMessage += `    当前价格: $${orderResult.current_price}\n`
-            resultMessage += `    状态: ${orderResult.success ? '成功' : '失败'}\n`
-            
-            if (orderResult.main_order) {
-              resultMessage += `    主订单ID: ${orderResult.main_order.orderId}\n`
-              resultMessage += `    订单状态: ${orderResult.main_order.status}\n`
-            }
-            
-            if (orderResult.tp_sl_error) {
-              resultMessage += `    止盈止损错误: ${orderResult.tp_sl_error}\n`
-            }
-            
-            if (orderResult.orders && orderResult.orders.length > 0) {
-              resultMessage += `    相关订单: ${orderResult.orders.length}个\n`
-            }
-            
-            resultMessage += '\n'
+      // 统计成功和失败
+      let successCount = 0
+      let failedCount = 0
+      const successUsers = []
+      const failedUsers = []
+      
+      data.results.forEach(result => {
+        if (result.success === true) {
+          successCount++
+          successUsers.push({
+            alias: result.alias,
+            orderId: result.result?.orderId,
+            status: result.result?.status,
+            price: result.result?.price,
+            executedQty: result.result?.executedQty
+          })
+        } else {
+          failedCount++
+          failedUsers.push({
+            alias: result.alias,
+            error: result.result?.msg || result.message || `错误代码: ${result.status_code || '未知'}`
           })
         }
       })
+      
+      // 构建结果消息
+      let resultMessage = `批量下单完成！\n`
+      resultMessage += `交易对: ${data.symbol}\n`
+      resultMessage += `方向: ${data.side === 'BUY' ? '开多' : '开空'}\n`
+      resultMessage += `仓位方向: ${data.position_side}\n`
+      resultMessage += `杠杆: ${data.leverage}x\n`
+      resultMessage += `USDT金额: ${data.quantity_usdt}\n`
+      resultMessage += `目标用户数: ${data.target_count}\n`
+      resultMessage += `成功: ${successCount}个，失败: ${failedCount}个\n\n`
+      
+      if (successUsers.length > 0) {
+        resultMessage += '成功详情:\n'
+        successUsers.forEach(user => {
+          resultMessage += `• ${user.alias}:\n`
+          resultMessage += `  订单ID: ${user.orderId}\n`
+          resultMessage += `  状态: ${user.status}\n`
+          resultMessage += `  价格: ${user.price}\n`
+          resultMessage += `  已执行数量: ${user.executedQty}\n`
+        })
+      }
+      
+      if (failedUsers.length > 0) {
+        resultMessage += '\n失败详情:\n'
+        failedUsers.forEach(user => {
+          resultMessage += `• ${user.alias}: ${user.error}\n`
+        })
+      }
+      
+      alert(resultMessage)
+      
+      // 关闭弹窗并刷新数据
+      showBatchOrderModal.value = false
+      await forceRefresh()
+    } else {
+      throw new Error(response.data?.message || '批量下单失败')
     }
-    
-    if (failedUsers.length > 0) {
-      resultMessage += '\n失败详情:\n'
-      failedUsers.forEach(failed => {
-        resultMessage += `• ${failed.user}: ${failed.error}\n`
-      })
-    }
-    
-    alert(resultMessage)
-    
-    // 关闭弹窗并刷新数据
-    showBatchOrderModal.value = false
-    await forceRefresh()
     
   } catch (error) {
     console.error('批量下单失败:', error)
@@ -3758,12 +3753,36 @@ watch(() => tpSlModal.value.stopLoss.enabled, () => {
 .order-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--n-border-color);
 }
 
 .cancel-order-btn {
+  font-size: 12px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.batch-cancel-btn {
+  font-size: 12px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+/* 头部操作按钮样式 */
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cancel-all-btn {
   font-size: 12px;
   height: 28px;
   padding: 0 12px;
