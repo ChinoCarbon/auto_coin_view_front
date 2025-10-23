@@ -75,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V7.0</span>
+        <span class="footer-title">动态表格 V7.1</span>
       </div>
     </n-layout-footer>
     
