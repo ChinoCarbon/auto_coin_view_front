@@ -643,6 +643,35 @@
       </template>
     </n-modal>
     
+    <!-- 批量撤单弹窗 -->
+    <n-modal v-model:show="batchCancelModal.show" preset="dialog" title="批量撤单确认" size="large">
+      <div v-if="batchCancelModal.symbol">
+        <n-descriptions :column="1" bordered>
+          <n-descriptions-item label="交易对">
+            <n-tag type="info" size="large">{{ batchCancelModal.symbol }}</n-tag>
+          </n-descriptions-item>
+        </n-descriptions>
+        
+        <n-alert type="warning" style="margin-top: 16px;">
+          <template #header>
+            确认批量撤单
+          </template>
+          此操作将撤销所有用户中 <strong>{{ batchCancelModal.symbol }}</strong> 交易对的所有挂单。请确认无误后点击"确认撤单"。
+        </n-alert>
+      </div>
+      
+      <template #action>
+        <n-button @click="cancelBatchCancel">取消</n-button>
+        <n-button 
+          type="error" 
+          @click="confirmBatchCancel"
+          :loading="batchCancelModal.loading"
+        >
+          确认撤单
+        </n-button>
+      </template>
+    </n-modal>
+    
     <!-- 修改杠杆弹窗 -->
     <n-modal v-model:show="modifyLeverageModal.show" :mask-closable="false">
       <n-card
@@ -1107,6 +1136,13 @@ const quickOrderForm = ref({
   positionPercentage: 50, // 仓位百分比，默认50%
   takeProfitPercentage: null, // 止盈百分比
   stopLossPercentage: null // 止损百分比
+})
+
+// 批量撤单模态框
+const batchCancelModal = ref({
+  show: false,
+  loading: false,
+  symbol: ''
 })
 
 // 计算属性
@@ -1794,8 +1830,116 @@ async function refreshOrders() {
 
 // 批量撤单功能
 function batchCancelOrder(order) {
-  console.log('批量撤单功能待实现:', order)
-  // TODO: 实现批量撤单逻辑
+  console.log('批量撤单功能:', order)
+  
+  // 设置批量撤单模态框数据
+  batchCancelModal.value = {
+    show: true,
+    loading: false,
+    symbol: order.symbol
+  }
+}
+
+// 确认批量撤单
+async function confirmBatchCancel() {
+  try {
+    batchCancelModal.value.loading = true
+    
+    // 构建请求数据
+    const requestData = {
+      symbol: batchCancelModal.value.symbol
+    }
+    
+    console.log('发送批量撤单请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_same`, requestData)
+    
+    console.log('批量撤单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
+      
+      // 统计成功和失败
+      let totalCancelled = 0
+      const successUsers = []
+      const noOrdersUsers = []
+      
+      data.results.forEach(result => {
+        const cancelledCount = result.cancelled || 0
+        totalCancelled += cancelledCount
+        
+        if (cancelledCount > 0) {
+          successUsers.push({
+            alias: result.alias,
+            symbol: result.symbol,
+            cancelled: cancelledCount,
+            orders: result.orders || []
+          })
+        } else {
+          noOrdersUsers.push({
+            alias: result.alias,
+            symbol: result.symbol
+          })
+        }
+      })
+      
+      // 构建结果消息
+      let resultMessage = `批量撤单完成！\n\n`
+      resultMessage += `📊 订单信息:\n`
+      resultMessage += `   • 交易对: ${data.symbol}\n\n`
+      resultMessage += `📈 统计结果:\n`
+      resultMessage += `   • 处理用户数: ${data.user_count}\n`
+      resultMessage += `   • 成功撤销: ${data.total_cancelled}个订单\n\n`
+      
+      if (successUsers.length > 0) {
+        resultMessage += '成功撤销详情:\n'
+        successUsers.forEach(user => {
+          resultMessage += `• ${user.alias} (${user.symbol}):\n`
+          resultMessage += `  撤销成功: ${user.cancelled}个订单\n`
+          
+          if (user.orders.length > 0) {
+            resultMessage += `  订单详情:\n`
+            user.orders.forEach(order => {
+              const status = order.status_code === 200 ? '✅ 成功' : '❌ 失败'
+              const errorMsg = order.result?.msg || ''
+              resultMessage += `    - 订单ID: ${order.orderId} ${status}\n`
+              if (errorMsg) {
+                resultMessage += `      错误: ${errorMsg}\n`
+              }
+            })
+          }
+          resultMessage += '\n'
+        })
+      }
+      
+      if (noOrdersUsers.length > 0) {
+        resultMessage += '无挂单用户:\n'
+        noOrdersUsers.forEach(user => {
+          resultMessage += `• ${user.alias} (${user.symbol})\n`
+        })
+      }
+      
+      alert(resultMessage)
+      
+      // 关闭弹窗并刷新数据
+      batchCancelModal.value.show = false
+      await fetchAllOrders()
+    } else {
+      throw new Error(response.data?.message || '批量撤单失败')
+    }
+    
+  } catch (error) {
+    console.error('批量撤单失败:', error)
+    alert('批量撤单失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    batchCancelModal.value.loading = false
+  }
+}
+
+// 取消批量撤单
+function cancelBatchCancel() {
+  batchCancelModal.value.show = false
 }
 
 // 撤销全部功能 - 撤销指定用户的所有订单
