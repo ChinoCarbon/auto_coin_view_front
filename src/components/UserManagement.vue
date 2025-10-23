@@ -1536,7 +1536,7 @@ function updatePositionPrices(symbol, currentPrice) {
     user.positions.forEach((position, index) => {
       if (position.symbol === symbol) {
         foundPositions++
-      //  console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
+        console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
         // 获取原始数据（从API获取的固定数据，刷新时更新）
         const originalEntryPrice = position.originalEntryPrice || position.entryPrice
         const originalAmount = position.amount
@@ -1592,8 +1592,8 @@ function updatePositionPrices(symbol, currentPrice) {
         const profitChanged = Math.abs(position.unrealizedPnl - newUnrealizedPnl) > 0.01
         const percentageChanged = Math.abs(position.percentage - newPercentage) > 0.01
         
-        // 使用Vue的响应式更新方式
-        user.positions[index] = {
+        // 使用Vue的响应式更新方式 - 使用splice确保响应式更新
+        const updatedPosition = {
           ...position,
           markPrice: currentPrice,
           // entryPrice 保持不变，使用原始值
@@ -1606,6 +1606,11 @@ function updatePositionPrices(symbol, currentPrice) {
           _highlightProfit: profitChanged,
           _highlightPercentage: percentageChanged
         }
+        
+        // 使用splice确保Vue能检测到数组变化
+        user.positions.splice(index, 1, updatedPosition)
+        
+        console.log(`✅ 已更新仓位: 用户=${user.alias}, 币种=${symbol}, 新盈亏=${newUnrealizedPnl.toFixed(2)}, 新收益率=${newPercentage.toFixed(2)}%`)
         
         // 清除高亮效果（1秒后）
         if (profitChanged || percentageChanged) {
@@ -1632,10 +1637,12 @@ function updatePositionPrices(symbol, currentPrice) {
   
   console.log(`📊 价格更新总结: 找到 ${foundPositions} 个匹配仓位，更新了 ${hasUpdate ? '是' : '否'}`)
   
-  // 强制触发响应式更新
+  // 强制触发响应式更新 - 使用nextTick确保DOM更新
   if (hasUpdate) {
-    // 触发Vue的响应式更新
-    users.value = [...users.value]
+    nextTick(() => {
+      // 触发Vue的响应式更新
+      users.value = [...users.value]
+    })
   }
 }
 
@@ -2624,6 +2631,13 @@ function updateUserExpectedProfits() {
   
   modal.affectedUsers.forEach((user, index) => {
     console.log(`处理用户 ${index}:`, user)
+    
+    // 初始化变量
+    let entryPrice = 0
+    let positionAmt = 0
+    let leverage = 1
+    let userPosition = null
+    
     // 检查用户是否有positions数据
     if (!user.positions || !Array.isArray(user.positions)) {
       console.log('用户没有positions数据:', user)
@@ -2633,7 +2647,7 @@ function updateUserExpectedProfits() {
     }
     
     // 获取用户的仓位信息
-    const userPosition = user.positions.find(p => 
+    userPosition = user.positions.find(p => 
       p.symbol === modal.symbol && p.side === modal.side
     )
     
@@ -2643,9 +2657,9 @@ function updateUserExpectedProfits() {
       return
     }
     
-    const entryPrice = parseFloat(userPosition.entryPrice)
-    const positionAmt = parseFloat(userPosition.amount) // 使用 amount 而不是 positionAmt
-    const leverage = parseFloat(userPosition.leverage) || 1
+    entryPrice = parseFloat(userPosition.entryPrice)
+    positionAmt = parseFloat(userPosition.amount) // 使用 amount 而不是 positionAmt
+    leverage = parseFloat(userPosition.leverage) || 1
     
     // 验证数值有效性
     if (isNaN(entryPrice) || isNaN(positionAmt) || entryPrice <= 0) {

@@ -77,6 +77,73 @@
         :pagination="false"
       />
     </div>
+    
+    <!-- 快速下单确认模态框 -->
+    <n-modal v-model:show="showQuickOrderConfirmModal" preset="dialog" title="快速下单确认" size="large">
+      <div v-if="quickOrderConfirmData.settings">
+        <n-descriptions :column="2" bordered>
+          <n-descriptions-item label="交易对">
+            <n-tag :type="quickOrderConfirmData.side === 'BUY' ? 'success' : 'warning'">
+              {{ quickOrderConfirmData.symbol }}
+            </n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="交易方向">
+            <n-tag :type="quickOrderConfirmData.side === 'BUY' ? 'success' : 'warning'">
+              {{ quickOrderConfirmData.side === 'BUY' ? '开多' : '开空' }}
+            </n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="杠杆倍数">
+            <n-tag type="info">{{ quickOrderConfirmData.settings.leverage }}x</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="仓位百分比">
+            <n-tag type="info">{{ quickOrderConfirmData.settings.positionPercentage }}%</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="用户模式">
+            <n-tag type="primary">
+              {{ quickOrderConfirmData.settings.useAllUsers ? '全部用户' : '指定用户' }}
+            </n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="订单类型">
+            <n-tag type="default">市价单</n-tag>
+          </n-descriptions-item>
+        </n-descriptions>
+        
+        <n-divider>止盈止损设置</n-divider>
+        
+        <n-descriptions :column="2" bordered>
+          <n-descriptions-item label="止盈百分比">
+            <n-tag v-if="quickOrderConfirmData.settings.takeProfitPercentage" type="success">
+              {{ quickOrderConfirmData.settings.takeProfitPercentage }}%
+            </n-tag>
+            <n-tag v-else type="default">未设置</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="止损百分比">
+            <n-tag v-if="quickOrderConfirmData.settings.stopLossPercentage" type="error">
+              {{ quickOrderConfirmData.settings.stopLossPercentage }}%
+            </n-tag>
+            <n-tag v-else type="default">未设置</n-tag>
+          </n-descriptions-item>
+        </n-descriptions>
+        
+        <n-alert type="warning" style="margin-top: 16px;">
+          <template #header>
+            确认执行快速下单
+          </template>
+          此操作将使用上述设置对所有{{ quickOrderConfirmData.settings.useAllUsers ? '用户' : '选中用户' }}执行{{ quickOrderConfirmData.side === 'BUY' ? '开多' : '开空' }}操作，请确认无误后点击"确认下单"。
+        </n-alert>
+      </div>
+      
+      <template #action>
+        <n-button @click="cancelQuickOrder">取消</n-button>
+        <n-button 
+          type="primary" 
+          @click="confirmQuickOrder"
+          :loading="quickOrderLoading"
+        >
+          确认下单
+        </n-button>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -122,6 +189,17 @@ const notification = useNotification()
 
 // 存储已触发的警告，避免重复触发
 const triggeredWarnings = ref(new Set())
+
+// 快速下单确认模态框
+const showQuickOrderConfirmModal = ref(false)
+const quickOrderLoading = ref(false)
+const quickOrderConfirmData = ref({
+  coin: '',
+  symbol: '',
+  side: '',
+  positionSide: '',
+  settings: null
+})
 
 // 触发阈值警告
 function triggerThresholdWarning(coin, timestamp, type, actualValue, threshold) {
@@ -1052,26 +1130,83 @@ async function addCoin(value) {
 }
 
 // 快速开多
-async function quickOpenLong(coin) {
-  try {
-    console.log('快速开多:', coin)
-    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
-    await executeQuickOrder(symbol, 'BUY', 'LONG')
-  } catch (error) {
-    console.error('快速开多失败:', error)
-    alert('快速开多失败: ' + error.message)
+function quickOpenLong(coin) {
+  console.log('快速开多:', coin)
+  const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+  
+  // 加载快速下单设置
+  const savedSettings = localStorage.getItem('quickOrderSettings')
+  if (!savedSettings) {
+    alert('请先设置快速下单参数')
+    return
   }
+  
+  const settings = JSON.parse(savedSettings)
+  
+  // 设置确认数据
+  quickOrderConfirmData.value = {
+    coin: coin,
+    symbol: symbol,
+    side: 'BUY',
+    positionSide: 'LONG',
+    settings: settings
+  }
+  
+  // 显示确认模态框
+  showQuickOrderConfirmModal.value = true
 }
 
 // 快速开空
-async function quickOpenShort(coin) {
+function quickOpenShort(coin) {
+  console.log('快速开空:', coin)
+  const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+  
+  // 加载快速下单设置
+  const savedSettings = localStorage.getItem('quickOrderSettings')
+  if (!savedSettings) {
+    alert('请先设置快速下单参数')
+    return
+  }
+  
+  const settings = JSON.parse(savedSettings)
+  
+  // 设置确认数据
+  quickOrderConfirmData.value = {
+    coin: coin,
+    symbol: symbol,
+    side: 'SELL',
+    positionSide: 'SHORT',
+    settings: settings
+  }
+  
+  // 显示确认模态框
+  showQuickOrderConfirmModal.value = true
+}
+
+// 确认执行快速下单
+async function confirmQuickOrder() {
   try {
-    console.log('快速开空:', coin)
-    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
-    await executeQuickOrder(symbol, 'SELL', 'SHORT')
+    quickOrderLoading.value = true
+    const { symbol, side, positionSide } = quickOrderConfirmData.value
+    await executeQuickOrder(symbol, side, positionSide)
+    showQuickOrderConfirmModal.value = false
   } catch (error) {
-    console.error('快速开空失败:', error)
-    alert('快速开空失败: ' + error.message)
+    console.error('快速下单失败:', error)
+    alert('快速下单失败: ' + error.message)
+  } finally {
+    quickOrderLoading.value = false
+  }
+}
+
+// 取消快速下单
+function cancelQuickOrder() {
+  showQuickOrderConfirmModal.value = false
+  quickOrderConfirmData.value = {
+    coin: '',
+    symbol: '',
+    side: '',
+    positionSide: '',
+    settings: null
   }
 }
 
