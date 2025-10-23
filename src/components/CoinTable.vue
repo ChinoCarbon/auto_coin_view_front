@@ -1051,6 +1051,251 @@ async function addCoin(value) {
     })
 }
 
+// 快速开多
+async function quickOpenLong(coin) {
+  try {
+    console.log('快速开多:', coin)
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    await executeQuickOrder(symbol, 'BUY', 'LONG')
+  } catch (error) {
+    console.error('快速开多失败:', error)
+    alert('快速开多失败: ' + error.message)
+  }
+}
+
+// 快速开空
+async function quickOpenShort(coin) {
+  try {
+    console.log('快速开空:', coin)
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    await executeQuickOrder(symbol, 'SELL', 'SHORT')
+  } catch (error) {
+    console.error('快速开空失败:', error)
+    alert('快速开空失败: ' + error.message)
+  }
+}
+
+// 执行快速下单
+async function executeQuickOrder(symbol, side, positionSide) {
+  try {
+    // 从localStorage加载快速下单设置
+    const savedSettings = localStorage.getItem('quickOrderSettings')
+    if (!savedSettings) {
+      alert('请先设置快速下单参数')
+      return
+    }
+    
+    const settings = JSON.parse(savedSettings)
+    console.log('加载快速下单设置:', settings)
+    
+    // 验证设置
+    if (!settings.leverage || settings.leverage <= 0) {
+      alert('快速下单设置中杠杆倍数无效')
+      return
+    }
+    
+    if (!settings.positionPercentage || settings.positionPercentage <= 0) {
+      alert('快速下单设置中仓位百分比无效')
+      return
+    }
+    
+    // 获取用户列表
+    const usersResponse = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/users`)
+    if (!usersResponse.data?.success || !usersResponse.data?.data?.users) {
+      throw new Error('获取用户列表失败')
+    }
+    
+    const allUsers = usersResponse.data.data.users
+    
+    // 根据设置确定目标用户
+    let targetUsers = []
+    if (settings.useAllUsers) {
+      targetUsers = allUsers
+    } else if (settings.selectedUsers && settings.selectedUsers.length > 0) {
+      targetUsers = allUsers.filter(user => settings.selectedUsers.includes(user.id))
+    } else {
+      alert('快速下单设置中未选择用户')
+      return
+    }
+    
+    if (targetUsers.length === 0) {
+      alert('没有可用的用户')
+      return
+    }
+    
+    // 获取用户余额信息
+    const positionsResponse = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/positions/all`)
+    if (!positionsResponse.data?.success || !positionsResponse.data?.data?.users) {
+      throw new Error('获取用户余额失败')
+    }
+    
+    const usersWithBalance = positionsResponse.data.data.users
+    
+    // 计算每个用户的下单金额
+    const userOrders = []
+    const quantities = []
+    
+    for (const user of targetUsers) {
+      // 查找用户的余额信息
+      const userBalance = usersWithBalance.find(u => u.alias === user.alias)
+      if (!userBalance) {
+        console.warn(`用户 ${user.alias} 没有余额信息，跳过`)
+        continue
+      }
+      
+      // 查找USDT钱包资产
+      const walletAsset = userBalance.positions?.find(pos => pos.type === 'wallet' && pos.asset === 'USDT')
+      if (!walletAsset) {
+        console.warn(`用户 ${user.alias} 没有USDT钱包，跳过`)
+        continue
+      }
+      
+      const availableBalance = parseFloat(walletAsset.availableBalance) || 0
+      if (availableBalance <= 0) {
+        console.warn(`用户 ${user.alias} 可用余额为0，跳过`)
+        continue
+      }
+      
+      // 计算下单金额
+      const orderAmount = (availableBalance * settings.positionPercentage) / 100
+      
+      userOrders.push({
+        user_id: user.id,
+        amount: Math.round(orderAmount * 100) / 100 // 保留2位小数
+      })
+      quantities.push(Math.round(orderAmount * 100) / 100)
+    }
+    
+    if (userOrders.length === 0) {
+      alert('没有用户满足下单条件（余额不足）')
+      return
+    }
+    
+    // 构建API请求数据
+    const requestData = {
+      symbol: symbol,
+      side: side,
+      position_side: positionSide,
+      user_ids: userOrders.map(order => order.user_id),
+      quantities: quantities,
+      leverage: settings.leverage,
+      type: 'MARKET',
+      use_testnet: false,
+      is_fast_order: true,
+      fast_order_tp_percentage: settings.takeProfitPercentage || 0,
+      fast_order_sl_percentage: settings.stopLossPercentage || 0
+    }
+    
+    console.log('快速下单请求:', requestData)
+    
+    // 调用批量下单API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/batch_all`, requestData)
+    
+    console.log('快速下单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
+      
+      // 统计成功和失败
+      let successCount = 0
+      let failedCount = 0
+      const successUsers = []
+      const failedUsers = []
+      
+      data.results.forEach(result => {
+        if (result.success === true) {
+          successCount++
+          const mainOrder = result.result?.main_order
+          const tpOrder = result.result?.tp_order
+          const slOrder = result.result?.sl_order
+          
+          successUsers.push({
+            alias: result.alias,
+            mainOrderId: mainOrder?.orderId,
+            mainStatus: mainOrder?.status,
+            mainPrice: mainOrder?.price,
+            executedQty: mainOrder?.executedQty,
+            quantity: result.result?.quantity,
+            priceUsed: result.result?.price_used,
+            side: result.result?.side,
+            positionSide: result.result?.position_side,
+            leverage: result.result?.leverage,
+            tpOrderId: tpOrder?.orderId,
+            tpStatus: tpOrder?.status,
+            tpPrice: tpOrder?.stopPrice,
+            slOrderId: slOrder?.orderId,
+            slStatus: slOrder?.status,
+            slPrice: slOrder?.stopPrice
+          })
+        } else {
+          failedCount++
+          failedUsers.push({
+            alias: result.alias,
+            error: result.result?.msg || result.message || `错误代码: ${result.status_code || '未知'}`
+          })
+        }
+      })
+      
+      // 构建结果消息
+      let resultMessage = `快速${side === 'BUY' ? '开多' : '开空'}完成！\n`
+      resultMessage += `交易对: ${data.symbol}\n`
+      resultMessage += `方向: ${data.side === 'BUY' ? '开多' : '开空'}\n`
+      resultMessage += `杠杆: ${data.leverage}x\n`
+      resultMessage += `目标用户数: ${data.results.length}\n`
+      resultMessage += `成功: ${successCount}个，失败: ${failedCount}个\n\n`
+      
+      if (data.take_profit_price) {
+        resultMessage += `止盈价格: $${data.take_profit_price}\n`
+      }
+      if (data.stop_loss_price) {
+        resultMessage += `止损价格: $${data.stop_loss_price}\n`
+      }
+      if (data.take_profit_price || data.stop_loss_price) {
+        resultMessage += '\n'
+      }
+      
+      if (successUsers.length > 0) {
+        resultMessage += '成功详情:\n'
+        successUsers.forEach(user => {
+          resultMessage += `• ${user.alias}:\n`
+          resultMessage += `  主订单ID: ${user.mainOrderId}\n`
+          resultMessage += `  状态: ${user.mainStatus}\n`
+          resultMessage += `  数量: ${user.quantity} ${data.symbol.replace('USDT', '')}\n`
+          resultMessage += `  使用价格: $${user.priceUsed}\n`
+          resultMessage += `  方向: ${user.side}\n`
+          resultMessage += `  仓位方向: ${user.positionSide}\n`
+          resultMessage += `  杠杆: ${user.leverage}x\n`
+          
+          if (user.tpOrderId) {
+            resultMessage += `  止盈订单ID: ${user.tpOrderId}\n`
+            resultMessage += `  止盈价格: $${user.tpPrice}\n`
+          }
+          if (user.slOrderId) {
+            resultMessage += `  止损订单ID: ${user.slOrderId}\n`
+            resultMessage += `  止损价格: $${user.slPrice}\n`
+          }
+        })
+      }
+      
+      if (failedUsers.length > 0) {
+        resultMessage += '\n失败详情:\n'
+        failedUsers.forEach(user => {
+          resultMessage += `• ${user.alias}: ${user.error}\n`
+        })
+      }
+      
+      alert(resultMessage)
+      
+    } else {
+      throw new Error(response.data?.message || '快速下单失败')
+    }
+    
+  } catch (error) {
+    console.error('快速下单执行失败:', error)
+    throw error
+  }
+}
+
 // 删除币种
 async function deleteCoin(coin) {
   const endpoint = props.apiPrefix ? 
@@ -1157,22 +1402,60 @@ const actionColumn = {
   title: '操作',
   key: 'actions',
   fixed: 'right',
-  width: CELL_WIDTH,
+  width: CELL_WIDTH * 3, // 增加宽度以容纳更多按钮
   render: (row) => {
-    // user 模式：不显示删除按钮
-    if (props.currentUser) {
-      return null
+    // user 模式：不显示任何操作按钮
+    if (localStorage.getItem('currentUser') !== '') {
+      if(props.apiPrefix === '/admin') {
+        return null
+      } else {
+        return h('div', { 
+      style: 'display: flex; gap: 4px; align-items: center;' 
+    }, [
+      h(
+        NButton,
+        {
+          size: 'small',
+          type: 'error',
+          onClick: () => deleteCoin(row.coin)
+        },
+        { default: () => '删除' }
+      )
+    ])
+      }
     }
     
-    return h(
-      NButton,
-      {
-        size: 'small',
-        type: 'error',
-        onClick: () => deleteCoin(row.coin)
-      },
-      { default: () => '删除' }
-    )
+    return h('div', { 
+      style: 'display: flex; gap: 4px; align-items: center;' 
+    }, [
+      h(
+        NButton,
+        {
+          size: 'small',
+          type: 'success',
+          onClick: () => quickOpenLong(row.coin)
+        },
+        { default: () => '快速开多' }
+      ),
+      h(
+        NButton,
+        {
+          size: 'small',
+          type: 'warning',
+          onClick: () => quickOpenShort(row.coin)
+        },
+        { default: () => '快速开空' }
+      ),
+      h(
+        NButton,
+        {
+          size: 'small',
+          type: 'error',
+          onClick: () => deleteCoin(row.coin)
+        },
+        { default: () => '删除' }
+      )
+    ])
   }
 }
 

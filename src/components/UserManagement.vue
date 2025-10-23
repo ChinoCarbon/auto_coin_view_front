@@ -25,6 +25,13 @@
         批量下单
       </n-button>
       
+      <n-button 
+        type="info" 
+        @click="openQuickOrderModal"
+      >
+        快速下单设置
+      </n-button>
+      
       <div class="auto-refresh-controls">
         <n-switch 
           v-model:value="autoRefresh" 
@@ -498,6 +505,144 @@
       </template>
     </n-modal>
     
+    <!-- 快速下单设置弹窗 -->
+    <n-modal v-model:show="showQuickOrderModal" preset="dialog" :title="quickOrderModalTitle" size="large">
+      <n-form :model="quickOrderForm" label-placement="left" label-width="120px">
+        <n-form-item label="选择用户">
+          <div style="margin-bottom: 12px;">
+            <n-checkbox v-model:checked="quickOrderUseAllUsers" @update:checked="onQuickOrderAllUsersChange">
+              全部用户下单
+            </n-checkbox>
+          </div>
+          <n-checkbox-group v-model:value="quickOrderSelectedUsers" :disabled="quickOrderUseAllUsers">
+            <n-checkbox 
+              v-for="user in users" 
+              :key="user.id" 
+              :value="user.id"
+            >
+              <span>{{ user.alias }} (余额: ${{ user.availableBalance?.toFixed(2) || '0.00' }})</span>
+            </n-checkbox>
+          </n-checkbox-group>
+        </n-form-item>
+        
+        <n-form-item label="杠杆倍数">
+          <n-input-number 
+            v-model:value="quickOrderForm.leverage" 
+            :min="1" 
+            :max="100"
+            placeholder="输入杠杆倍数"
+          />
+          <span class="form-tip">范围: 1x - 100x</span>
+        </n-form-item>
+        
+        <n-form-item label="仓位百分比">
+          <div style="width: 100%;">
+            <n-slider 
+              v-model:value="quickOrderForm.positionPercentage" 
+              :min="1"
+              :max="100"
+              :step="1"
+              :marks="{ 25: '25%', 50: '50%', 75: '75%', 100: '100%' }"
+              :tooltip="true"
+              style="margin-bottom: 20px;"
+            />
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px;">
+              <n-input-number 
+                v-model:value="quickOrderForm.positionPercentage" 
+                :min="1"
+                :max="100"
+                :precision="0"
+                size="small"
+                style="width: 120px;"
+              >
+                <template #suffix>
+                  %
+                </template>
+              </n-input-number>
+            </div>
+            <div style="margin-top: 8px;">
+              <span class="form-tip">每个用户将使用可用余额的 {{ quickOrderForm.positionPercentage }}%</span>
+            </div>
+          </div>
+        </n-form-item>
+        
+        <n-form-item v-if="((quickOrderUseAllUsers && users.length > 0) || quickOrderSelectedUsers.length > 0)" label="下单预览">
+          <div class="order-preview">
+            <div 
+              v-for="userId in (quickOrderUseAllUsers ? users.map(u => u.id) : quickOrderSelectedUsers)" 
+              :key="userId"
+              class="preview-item"
+            >
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <div style="font-weight: bold; color: #1890ff;">{{ getUserById(userId)?.alias }}</div>
+                <div style="font-size: 13px;">
+                  <span style="color: #666;">下单金额:</span> 
+                  <span style="font-weight: bold; color: #1890ff;">${{ calculateQuickOrderAmount(userId).toFixed(2) }} USDT</span>
+                  <span style="color: #999; margin-left: 8px;">(余额 ${{ (getUserById(userId)?.availableBalance || 0).toFixed(2) }} × {{ quickOrderForm.positionPercentage }}%)</span>
+                </div>
+                <div style="font-size: 13px;">
+                  <span style="color: #666;">订单类型:</span> 市价单
+                  <span style="color: #666; margin-left: 12px;">杠杆:</span> 
+                  <span style="font-weight: bold;">{{ quickOrderForm.leverage }}x</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </n-form-item>
+        
+        <n-divider>止盈止损设置</n-divider>
+        
+        <n-form-item label="止盈百分比">
+          <n-input-number 
+            v-model:value="quickOrderForm.takeProfitPercentage" 
+            :min="0"
+            :max="1000"
+            :precision="1"
+            placeholder="止盈百分比（可选）"
+            clearable
+          >
+            <template #suffix>
+              %
+            </template>
+          </n-input-number>
+          <span class="form-tip">例如：5% 表示盈利5%时止盈</span>
+        </n-form-item>
+        
+        <n-form-item label="止损百分比">
+          <n-input-number 
+            v-model:value="quickOrderForm.stopLossPercentage" 
+            :min="0"
+            :max="100"
+            :precision="1"
+            placeholder="止损百分比（可选）"
+            clearable
+          >
+            <template #suffix>
+              %
+            </template>
+          </n-input-number>
+          <span class="form-tip">例如：3% 表示亏损3%时止损</span>
+        </n-form-item>
+      </n-form>
+      
+      <template #action>
+        <n-button @click="showQuickOrderModal = false">取消</n-button>
+        <n-button 
+          type="warning" 
+          @click="clearQuickOrderSettings"
+        >
+          清除设置
+        </n-button>
+        <n-button 
+          type="primary" 
+          :loading="quickOrderLoading"
+          @click="saveQuickOrderSettings"
+        >
+          保存设置
+        </n-button>
+      </template>
+    </n-modal>
+    
     <!-- 修改杠杆弹窗 -->
     <n-modal v-model:show="modifyLeverageModal.show" :mask-closable="false">
       <n-card
@@ -861,7 +1006,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import { NTabs, NTabPane, NButton, NEmpty, NSwitch, NInputNumber, NModal, NForm, NFormItem, NSelect, NInput, NRadioGroup, NRadio, NCard, NCheckbox, NCheckboxGroup, NDivider, NAlert, NIcon, NSlider } from 'naive-ui'
 import axios from 'axios'
 
@@ -951,6 +1096,24 @@ const minQuantityByNotional = ref(0.001)
 const minQuantityUSDT = ref(10)
 const tickSize = ref(0.1)
 const symbolsLoading = ref(false)
+
+// 快速下单设置相关
+const showQuickOrderModal = ref(false)
+const quickOrderLoading = ref(false)
+const quickOrderSelectedUsers = ref([])
+const quickOrderUseAllUsers = ref(false)
+const quickOrderForm = ref({
+  leverage: 1,
+  positionPercentage: 50, // 仓位百分比，默认50%
+  takeProfitPercentage: null, // 止盈百分比
+  stopLossPercentage: null // 止损百分比
+})
+
+// 计算属性
+const quickOrderModalTitle = computed(() => {
+  const hasSettings = localStorage.getItem('quickOrderSettings')
+  return hasSettings ? '快速下单设置 (已保存)' : '快速下单设置'
+})
 
 // 获取用户列表
 async function fetchUsers() {
@@ -1745,6 +1908,161 @@ function onAllUsersChange(checked) {
   // 当取消全部用户选择时，保持selectedUsers不变，让用户手动选择
 }
 
+// 快速下单设置相关方法
+function openQuickOrderModal() {
+  showQuickOrderModal.value = true
+  quickOrderSelectedUsers.value = []
+  quickOrderUseAllUsers.value = false
+  // 加载保存的设置（如果有的话）
+  loadQuickOrderSettings()
+}
+
+// 处理快速下单全部用户选择变化
+function onQuickOrderAllUsersChange(checked) {
+  if (checked) {
+    quickOrderSelectedUsers.value = []
+  }
+  // 当取消全部用户选择时，保持selectedUsers不变，让用户手动选择
+}
+
+// 计算快速下单金额
+function calculateQuickOrderAmount(userId) {
+  const user = getUserById(userId)
+  if (!user || !user.availableBalance) return 0
+  
+  // 可用余额 × 百分比
+  const amount = (user.availableBalance * quickOrderForm.value.positionPercentage) / 100
+  return amount
+}
+
+// 加载快速下单设置
+function loadQuickOrderSettings() {
+  try {
+    const savedSettings = localStorage.getItem('quickOrderSettings')
+    if (savedSettings) {
+      const settings = JSON.parse(savedSettings)
+      console.log('加载快速下单设置:', settings)
+      
+      // 恢复表单数据
+      if (settings.leverage) quickOrderForm.value.leverage = settings.leverage
+      if (settings.positionPercentage) quickOrderForm.value.positionPercentage = settings.positionPercentage
+      if (settings.takeProfitPercentage !== undefined) quickOrderForm.value.takeProfitPercentage = settings.takeProfitPercentage
+      if (settings.stopLossPercentage !== undefined) quickOrderForm.value.stopLossPercentage = settings.stopLossPercentage
+      
+      // 恢复用户选择
+      if (settings.useAllUsers !== undefined) quickOrderUseAllUsers.value = settings.useAllUsers
+      if (settings.selectedUsers) quickOrderSelectedUsers.value = settings.selectedUsers
+    } else {
+      console.log('没有找到保存的快速下单设置，使用默认值')
+    }
+  } catch (error) {
+    console.error('加载快速下单设置失败:', error)
+  }
+}
+
+// 保存快速下单设置
+function saveQuickOrderSettings() {
+  try {
+    quickOrderLoading.value = true
+    
+    // 验证设置
+    if (!quickOrderUseAllUsers.value && quickOrderSelectedUsers.value.length === 0) {
+      alert('请选择至少一个用户或选择全部用户')
+      return
+    }
+    
+    if (quickOrderUseAllUsers.value && users.value.length === 0) {
+      alert('没有可用的用户')
+      return
+    }
+    
+    if (!quickOrderForm.value.positionPercentage || quickOrderForm.value.positionPercentage <= 0) {
+      alert('请输入有效的仓位百分比')
+      return
+    }
+    
+    if (!quickOrderForm.value.leverage || quickOrderForm.value.leverage <= 0) {
+      alert('请输入有效的杠杆倍数')
+      return
+    }
+    
+    // 准备保存的数据
+    const settingsToSave = {
+      // 表单设置
+      leverage: quickOrderForm.value.leverage,
+      positionPercentage: quickOrderForm.value.positionPercentage,
+      takeProfitPercentage: quickOrderForm.value.takeProfitPercentage,
+      stopLossPercentage: quickOrderForm.value.stopLossPercentage,
+      
+      // 用户选择
+      useAllUsers: quickOrderUseAllUsers.value,
+      selectedUsers: quickOrderSelectedUsers.value,
+      
+      // 保存时间
+      savedAt: new Date().toISOString()
+    }
+    
+    console.log('保存快速下单设置:', settingsToSave)
+    
+    // 保存到localStorage
+    localStorage.setItem('quickOrderSettings', JSON.stringify(settingsToSave))
+    
+    // 显示成功消息
+    const userCount = quickOrderUseAllUsers.value ? users.value.length : quickOrderSelectedUsers.value.length
+    const message = `快速下单设置保存成功！\n\n` +
+      `📊 设置详情:\n` +
+      `   • 杠杆倍数: ${quickOrderForm.value.leverage}x\n` +
+      `   • 仓位百分比: ${quickOrderForm.value.positionPercentage}%\n` +
+      `   • 止盈百分比: ${quickOrderForm.value.takeProfitPercentage || '未设置'}%\n` +
+      `   • 止损百分比: ${quickOrderForm.value.stopLossPercentage || '未设置'}%\n` +
+      `   • 目标用户: ${quickOrderUseAllUsers.value ? '全部用户' : '部分用户'} (${userCount}人)\n\n` +
+      `💡 提示: 设置已保存，下次打开时会自动加载`
+    
+    alert(message)
+    
+    // 关闭弹窗
+    showQuickOrderModal.value = false
+    
+  } catch (error) {
+    console.error('保存快速下单设置失败:', error)
+    alert('保存设置失败: ' + error.message)
+  } finally {
+    quickOrderLoading.value = false
+  }
+}
+
+// 清除快速下单设置
+function clearQuickOrderSettings() {
+  try {
+    // 确认清除
+    if (!confirm('确定要清除所有快速下单设置吗？此操作不可恢复。')) {
+      return
+    }
+    
+    // 清除localStorage
+    localStorage.removeItem('quickOrderSettings')
+    
+    // 重置表单到默认值
+    quickOrderForm.value = {
+      leverage: 1,
+      positionPercentage: 50,
+      takeProfitPercentage: null,
+      stopLossPercentage: null
+    }
+    
+    // 重置用户选择
+    quickOrderSelectedUsers.value = []
+    quickOrderUseAllUsers.value = false
+    
+    console.log('快速下单设置已清除')
+    alert('快速下单设置已清除！')
+    
+  } catch (error) {
+    console.error('清除快速下单设置失败:', error)
+    alert('清除设置失败: ' + error.message)
+  }
+}
+
 // 根据用户ID获取用户对象
 function getUserById(userId) {
   return users.value.find(u => u.id === userId)
@@ -1958,12 +2276,27 @@ async function submitBatchOrder() {
       data.results.forEach(result => {
         if (result.success === true) {
           successCount++
+          const mainOrder = result.result?.main_order
+          const tpOrder = result.result?.tp_order
+          const slOrder = result.result?.sl_order
+          
           successUsers.push({
             alias: result.alias,
-            orderId: result.result?.orderId,
-            status: result.result?.status,
-            price: result.result?.price,
-            executedQty: result.result?.executedQty
+            mainOrderId: mainOrder?.orderId,
+            mainStatus: mainOrder?.status,
+            mainPrice: mainOrder?.price,
+            executedQty: mainOrder?.executedQty,
+            quantity: result.result?.quantity,
+            priceUsed: result.result?.price_used,
+            side: result.result?.side,
+            positionSide: result.result?.position_side,
+            leverage: result.result?.leverage,
+            tpOrderId: tpOrder?.orderId,
+            tpStatus: tpOrder?.status,
+            tpPrice: tpOrder?.stopPrice,
+            slOrderId: slOrder?.orderId,
+            slStatus: slOrder?.status,
+            slPrice: slOrder?.stopPrice
           })
         } else {
           failedCount++
@@ -1978,20 +2311,40 @@ async function submitBatchOrder() {
       let resultMessage = `批量下单完成！\n`
       resultMessage += `交易对: ${data.symbol}\n`
       resultMessage += `方向: ${data.side === 'BUY' ? '开多' : '开空'}\n`
-      resultMessage += `仓位方向: ${data.position_side}\n`
       resultMessage += `杠杆: ${data.leverage}x\n`
-      resultMessage += `USDT金额: ${data.quantity_usdt}\n`
-      resultMessage += `目标用户数: ${data.target_count}\n`
+      resultMessage += `目标用户数: ${data.results.length}\n`
       resultMessage += `成功: ${successCount}个，失败: ${failedCount}个\n\n`
+      
+      if (data.take_profit_price) {
+        resultMessage += `止盈价格: $${data.take_profit_price}\n`
+      }
+      if (data.stop_loss_price) {
+        resultMessage += `止损价格: $${data.stop_loss_price}\n`
+      }
+      if (data.take_profit_price || data.stop_loss_price) {
+        resultMessage += '\n'
+      }
       
       if (successUsers.length > 0) {
         resultMessage += '成功详情:\n'
         successUsers.forEach(user => {
           resultMessage += `• ${user.alias}:\n`
-          resultMessage += `  订单ID: ${user.orderId}\n`
-          resultMessage += `  状态: ${user.status}\n`
-          resultMessage += `  价格: ${user.price}\n`
-          resultMessage += `  已执行数量: ${user.executedQty}\n`
+          resultMessage += `  主订单ID: ${user.mainOrderId}\n`
+          resultMessage += `  状态: ${user.mainStatus}\n`
+          resultMessage += `  数量: ${user.quantity} ${data.symbol.replace('USDT', '')}\n`
+          resultMessage += `  使用价格: $${user.priceUsed}\n`
+          resultMessage += `  方向: ${user.side}\n`
+          resultMessage += `  仓位方向: ${user.positionSide}\n`
+          resultMessage += `  杠杆: ${user.leverage}x\n`
+          
+          if (user.tpOrderId) {
+            resultMessage += `  止盈订单ID: ${user.tpOrderId}\n`
+            resultMessage += `  止盈价格: $${user.tpPrice}\n`
+          }
+          if (user.slOrderId) {
+            resultMessage += `  止损订单ID: ${user.slOrderId}\n`
+            resultMessage += `  止损价格: $${user.slPrice}\n`
+          }
         })
       }
       
@@ -2475,23 +2828,34 @@ async function confirmTpSl() {
       
       // 显示成功信息
       let successMessage = `止盈止损设置成功！\n`
-      successMessage += `交易对: ${tpSlModal.value.symbol}\n`
-      successMessage += `仓位方向: ${tpSlModal.value.side}\n`
+      successMessage += `交易对: ${data.symbol}\n`
+      successMessage += `仓位方向: ${data.position_side}\n`
       successMessage += `成功设置用户数: ${data.results.length}\n\n`
       
       // 显示每个用户的设置结果
       data.results.forEach((result, index) => {
         successMessage += `用户${index + 1} (${result.alias}):\n`
-        if (result.take_profit_price) {
-          successMessage += `  止盈: $${result.take_profit_price} (${result.take_profit_amount} USDT, ${result.take_profit_quantity} ${tpSlModal.value.symbol.replace('USDT', '')})\n`
-        }
-        if (result.stop_loss_price) {
-          successMessage += `  止损: $${result.stop_loss_price} (${result.stop_loss_amount} USDT, ${result.stop_loss_quantity} ${tpSlModal.value.symbol.replace('USDT', '')})\n`
-        }
-        successMessage += `  当前价格: $${result.current_price}\n`
-        successMessage += `  状态: ${result.success ? '成功' : '失败'}\n`
+        
         if (result.orders && result.orders.length > 0) {
-          successMessage += `  订单数: ${result.orders.length}\n`
+          result.orders.forEach(order => {
+            if (order.order_type === 'TAKE_PROFIT') {
+              successMessage += `  止盈订单:\n`
+              successMessage += `    价格: $${order.price}\n`
+              successMessage += `    数量: ${order.qty_coin} ${data.symbol.replace('USDT', '')}\n`
+              successMessage += `    金额: $${order.qty_usdt} USDT\n`
+              successMessage += `    订单ID: ${order.result.orderId}\n`
+              successMessage += `    状态: ${order.result.status}\n`
+            } else if (order.order_type === 'STOP_LOSS') {
+              successMessage += `  止损订单:\n`
+              successMessage += `    价格: $${order.price}\n`
+              successMessage += `    数量: ${order.qty_coin} ${data.symbol.replace('USDT', '')}\n`
+              successMessage += `    金额: $${order.qty_usdt} USDT\n`
+              successMessage += `    订单ID: ${order.result.orderId}\n`
+              successMessage += `    状态: ${order.result.status}\n`
+            }
+          })
+        } else {
+          successMessage += `  无订单生成\n`
         }
         successMessage += '\n'
       })
@@ -2538,16 +2902,59 @@ async function confirmModifyLeverage() {
       const result = response.data.data
       console.log('修改杠杆结果:', result)
       
+      // 统计成功和失败
+      let successCount = 0
+      let failedCount = 0
+      const successUsers = []
+      const failedUsers = []
+      
+      result.results.forEach(userResult => {
+        if (userResult.status_code === 200) {
+          successCount++
+          successUsers.push({
+            alias: userResult.alias,
+            leverage: userResult.result?.leverage,
+            maxNotionalValue: userResult.result?.maxNotionalValue
+          })
+        } else {
+          failedCount++
+          failedUsers.push({
+            alias: userResult.alias,
+            error: userResult.result?.msg || userResult.result || '修改失败',
+            hasPosition: userResult.has_position
+          })
+        }
+      })
+      
       // 显示成功信息
-      const successMessage = `杠杆修改完成！\n\n` +
-        `📊 交易对: ${result.symbol}\n` +
-        `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n` +
-        `⚡ 新杠杆: ${result.new_leverage}x\n\n` +
-        `👥 用户统计:\n` +
-        `   • 总用户数: ${result.total_users}\n` +
-        `   • 有仓位的用户: ${result.users_with_position}\n` +
-        `   • 成功修改: ${result.successful_modifications}\n` +
-        `   • 失败: ${result.failed_modifications}`
+      let successMessage = `杠杆修改完成！\n\n`
+      successMessage += `📊 交易对: ${result.symbol}\n`
+      successMessage += `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n`
+      successMessage += `⚡ 新杠杆: ${result.new_leverage}x\n\n`
+      successMessage += `👥 用户统计:\n`
+      successMessage += `   • 总用户数: ${result.user_count}\n`
+      successMessage += `   • 成功修改: ${result.modified_count}\n`
+      successMessage += `   • 失败: ${result.failed_count}\n\n`
+      
+      if (successUsers.length > 0) {
+        successMessage += '成功详情:\n'
+        successUsers.forEach(user => {
+          successMessage += `• ${user.alias}:\n`
+          successMessage += `  新杠杆: ${user.leverage}x\n`
+          successMessage += `  最大名义价值: $${user.maxNotionalValue}\n`
+        })
+      }
+      
+      if (failedUsers.length > 0) {
+        successMessage += '\n失败详情:\n'
+        failedUsers.forEach(user => {
+          successMessage += `• ${user.alias}: ${user.error}`
+          if (!user.hasPosition) {
+            successMessage += ' (无此方向持仓)'
+          }
+          successMessage += '\n'
+        })
+      }
       
       alert(successMessage)
       
@@ -2591,16 +2998,59 @@ async function confirmClosePosition() {
       const result = response.data.data
       console.log('平仓结果:', result)
       
+      // 统计成功和失败
+      let successCount = 0
+      let failedCount = 0
+      const successUsers = []
+      const failedUsers = []
+      
+      result.results.forEach(userResult => {
+        if (userResult.status_code === 200) {
+          successCount++
+          successUsers.push({
+            alias: userResult.alias,
+            closeAmt: userResult.close_amt,
+            orderId: userResult.result?.orderId,
+            status: userResult.result?.status,
+            origQty: userResult.result?.origQty,
+            side: userResult.result?.side
+          })
+        } else {
+          failedCount++
+          failedUsers.push({
+            alias: userResult.alias,
+            error: userResult.error || userResult.result || '平仓失败'
+          })
+        }
+      })
+      
       // 显示成功信息
-      const successMessage = `平仓完成！\n\n` +
-        `📊 交易对: ${result.symbol}\n` +
-        `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n` +
-        `📉 平仓比例: ${result.close_ratio}%\n\n` +
-        `👥 用户统计:\n` +
-        `   • 总用户数: ${result.total_users}\n` +
-        `   • 有仓位的用户: ${result.users_with_position}\n` +
-        `   • 成功平仓: ${result.successful_closes}\n` +
-        `   • 失败: ${result.failed_closes}`
+      let successMessage = `平仓完成！\n\n`
+      successMessage += `📊 交易对: ${result.symbol}\n`
+      successMessage += `📈 方向: ${result.position_side === 'LONG' ? '多头' : '空头'}\n`
+      successMessage += `📉 平仓比例: ${result.close_ratio}%\n\n`
+      successMessage += `👥 用户统计:\n`
+      successMessage += `   • 总用户数: ${result.results.length}\n`
+      successMessage += `   • 成功平仓: ${successCount}\n`
+      successMessage += `   • 失败: ${failedCount}\n\n`
+      
+      if (successUsers.length > 0) {
+        successMessage += '成功详情:\n'
+        successUsers.forEach(user => {
+          successMessage += `• ${user.alias}:\n`
+          successMessage += `  平仓数量: ${user.closeAmt} ${result.symbol.replace('USDT', '')}\n`
+          successMessage += `  订单ID: ${user.orderId}\n`
+          successMessage += `  状态: ${user.status}\n`
+          successMessage += `  方向: ${user.side}\n`
+        })
+      }
+      
+      if (failedUsers.length > 0) {
+        successMessage += '\n失败详情:\n'
+        failedUsers.forEach(user => {
+          successMessage += `• ${user.alias}: ${user.error}\n`
+        })
+      }
       
       alert(successMessage)
       

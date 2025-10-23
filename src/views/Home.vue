@@ -75,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V6.6(下单测试版)</span>
+        <span class="footer-title">动态表格 V7.0</span>
       </div>
     </n-layout-footer>
     
@@ -116,8 +116,16 @@ onMounted(() => {
   } else {
     // 无参数：从 localStorage 恢复
     const storedUser = localStorage.getItem('currentUser')
-    currentUser.value = storedUser || ''
-    showUserManagement.value = !storedUser // 空字符串表示管理员
+    if (storedUser !== null) {
+      // 有存储的权限信息
+      currentUser.value = storedUser
+      showUserManagement.value = !storedUser // 空字符串表示管理员
+    } else {
+      // 无参数且无存储：第一次访问，默认为普通用户模式
+      showUserManagement.value = false
+      currentUser.value = 'guest' // 设置一个默认用户名
+      localStorage.setItem('currentUser', 'guest')
+    }
   }
 })
 
