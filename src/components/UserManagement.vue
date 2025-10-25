@@ -138,8 +138,8 @@
                       </div>
                       <div class="position-details">
                         <div class="price-info">
-                          <span class="entry-price">入场价: ${{ position.entryPrice.toFixed(6) }}</span>
-                          <span class="mark-price">标记价: ${{ position.markPrice.toFixed(6) }}</span>
+                          <span class="entry-price">入场价: ${{ (position.entryPrice || 0).toFixed(6) }}</span>
+                          <span class="mark-price">标记价: ${{ (position.markPrice || 0).toFixed(6) }}</span>
                         </div>
             
                         <div class="pnl-info">
@@ -1381,6 +1381,9 @@ async function fetchAllPositions() {
                 side: position.positionSide,
                 formula: position.positionSide === 'SHORT' ? '(notional + unrealizedPnl) / abs(positionAmt)' : '(notional - unrealizedPnl) / abs(positionAmt)'
               })
+            } else {
+              // 如果持仓数量为0，使用API返回的entryPrice或默认值
+              entryPrice = parseFloat(position.entryPrice) || 0
             }
             
             // 计算杠杆倍数：名义价值 / 初始保证金
@@ -1564,15 +1567,17 @@ let wsLastMessageTime = 0
 
 // 更新仓位价格
 function updatePositionPrices(symbol, currentPrice) {
- // console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
+  console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
   let hasUpdate = false
   let foundPositions = 0
   
-  users.value.forEach(user => {
-    user.positions.forEach((position, index) => {
+  // 创建新的users数组，确保响应式更新
+  const newUsers = users.value.map(user => {
+    const newPositions = user.positions.map(position => {
       if (position.symbol === symbol) {
         foundPositions++
         console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
+        
         // 获取原始数据（从API获取的固定数据，刷新时更新）
         const originalEntryPrice = position.originalEntryPrice || position.entryPrice
         const originalAmount = position.amount
@@ -1618,18 +1623,26 @@ function updatePositionPrices(symbol, currentPrice) {
           // 5. 杠杆倍数保持不变（使用原始杠杆）
           newLeverage = position.originalLeverage || position.leverage
           
-           // 6. 重新计算保证金：名义价值 / 杠杆倍数
-           if (newLeverage > 0) {
-             newMargin = newNotional / newLeverage
-           }
+          // 6. 重新计算保证金：名义价值 / 杠杆倍数
+          if (newLeverage > 0) {
+            newMargin = newNotional / newLeverage
+          }
         }
         
         // 检查数值是否发生变化，添加高亮效果
         const profitChanged = Math.abs(position.unrealizedPnl - newUnrealizedPnl) > 0.01
         const percentageChanged = Math.abs(position.percentage - newPercentage) > 0.01
         
-        // 使用Vue的响应式更新方式 - 使用splice确保响应式更新
-        const updatedPosition = {
+        console.log(`✅ 已更新仓位: 用户=${user.alias}, 币种=${symbol}, 新盈亏=${newUnrealizedPnl.toFixed(2)}, 新收益率=${newPercentage.toFixed(2)}%`)
+        
+        if (position.side === 'SHORT') {
+          console.log(`空头计算: 入场价=${originalEntryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(originalEntryPrice - currentPrice).toFixed(6)})`)
+        }
+        
+        hasUpdate = true
+        
+        // 返回更新后的仓位
+        return {
           ...position,
           markPrice: currentPrice,
           // entryPrice 保持不变，使用原始值
@@ -1642,46 +1655,37 @@ function updatePositionPrices(symbol, currentPrice) {
           _highlightProfit: profitChanged,
           _highlightPercentage: percentageChanged
         }
-        
-        // 使用splice确保Vue能检测到数组变化
-        user.positions.splice(index, 1, updatedPosition)
-        
-        console.log(`✅ 已更新仓位: 用户=${user.alias}, 币种=${symbol}, 新盈亏=${newUnrealizedPnl.toFixed(2)}, 新收益率=${newPercentage.toFixed(2)}%`)
-        
-        // 清除高亮效果（1秒后）
-        if (profitChanged || percentageChanged) {
-          setTimeout(() => {
-            if (user.positions[index]) {
-              user.positions[index]._highlightProfit = false
-              user.positions[index]._highlightPercentage = false
-            }
-          }, 1000)
-        }
-        
-        hasUpdate = true
-        // console.log(`更新 ${symbol} 价格: ${currentPrice}`)
-        // console.log(`原始数据 - 入场价: ${originalEntryPrice.toFixed(6)}, 原始盈亏: ${originalUnrealizedPnl.toFixed(2)}, 原始保证金: ${originalMargin.toFixed(6)}`)
-        // console.log(`新数据 - 入场价: ${originalEntryPrice.toFixed(6)} (不变), 新盈亏: ${newUnrealizedPnl.toFixed(2)}, 收益率: ${newPercentage.toFixed(2)}% (基于原始保证金: ${originalMargin.toFixed(6)})`)
-        // console.log(`名义价值: ${position.originalNotional?.toFixed(6) || position.notional.toFixed(6)} → ${newNotional.toFixed(6)}`)
-        // console.log(`保证金: ${position.originalMargin?.toFixed(6) || position.margin.toFixed(6)} → ${newMargin.toFixed(6)}, 杠杆: ${position.originalLeverage?.toFixed(1) || position.leverage.toFixed(1)}x (保持不变)`)
-        if (position.side === 'SHORT') {
-          console.log(`空头计算: 入场价=${originalEntryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(originalEntryPrice - currentPrice).toFixed(6)})`)
-        }
       }
+      
+      // 返回未修改的仓位
+      return position
     })
+    
+    // 返回更新后的用户对象
+    return {
+      ...user,
+      positions: newPositions
+    }
   })
   
   console.log(`📊 价格更新总结: 找到 ${foundPositions} 个匹配仓位，更新了 ${hasUpdate ? '是' : '否'}`)
   
-  // 强制触发响应式更新 - 使用nextTick确保DOM更新
+  // 如果有更新，替换整个users数组
   if (hasUpdate) {
+    users.value = newUsers
+    
+    // 清除高亮效果（1秒后）
     nextTick(() => {
-      // 触发Vue的响应式更新 - 创建新的数组引用
-      const newUsers = users.value.map(user => ({
-        ...user,
-        positions: [...user.positions]
-      }))
-      users.value = newUsers
+      users.value.forEach(user => {
+        user.positions.forEach(position => {
+          if (position._highlightProfit || position._highlightPercentage) {
+            setTimeout(() => {
+              position._highlightProfit = false
+              position._highlightPercentage = false
+            }, 1000)
+          }
+        })
+      })
     })
   }
 }
@@ -2952,7 +2956,7 @@ async function confirmTpSl() {
         const takeProfitRatio = (tpSlModal.value.takeProfit.closeRatio || 100) / 100
         
         // 计算当前仓位价值（USDT）
-        const currentPositionValue = Math.abs(user.position.amount) * user.position.entryPrice
+        const currentPositionValue = Math.abs(user.position.amount) * (user.position.entryPrice || 0)
         const takeProfitAmount = currentPositionValue * takeProfitRatio
         
         userOrder.take_profit_price = takeProfitPrice
@@ -2965,7 +2969,7 @@ async function confirmTpSl() {
         const stopLossRatio = (tpSlModal.value.stopLoss.closeRatio || 100) / 100
         
         // 计算当前仓位价值（USDT）
-        const currentPositionValue = Math.abs(user.position.amount) * user.position.entryPrice
+        const currentPositionValue = Math.abs(user.position.amount) * (user.position.entryPrice || 0)
         const stopLossAmount = currentPositionValue * stopLossRatio
         
         userOrder.stop_loss_price = stopLossPrice
