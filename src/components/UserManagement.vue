@@ -1665,7 +1665,7 @@ function updatePositionPrices(symbol, currentPrice) {
         // console.log(`名义价值: ${position.originalNotional?.toFixed(6) || position.notional.toFixed(6)} → ${newNotional.toFixed(6)}`)
         // console.log(`保证金: ${position.originalMargin?.toFixed(6) || position.margin.toFixed(6)} → ${newMargin.toFixed(6)}, 杠杆: ${position.originalLeverage?.toFixed(1) || position.leverage.toFixed(1)}x (保持不变)`)
         if (position.side === 'SHORT') {
-          console.log(`空头计算: 入场价=${entryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(entryPrice - currentPrice).toFixed(6)})`)
+          console.log(`空头计算: 入场价=${originalEntryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(originalEntryPrice - currentPrice).toFixed(6)})`)
         }
       }
     })
@@ -1676,8 +1676,12 @@ function updatePositionPrices(symbol, currentPrice) {
   // 强制触发响应式更新 - 使用nextTick确保DOM更新
   if (hasUpdate) {
     nextTick(() => {
-      // 触发Vue的响应式更新
-      users.value = [...users.value]
+      // 触发Vue的响应式更新 - 创建新的数组引用
+      const newUsers = users.value.map(user => ({
+        ...user,
+        positions: [...user.positions]
+      }))
+      users.value = newUsers
     })
   }
 }
