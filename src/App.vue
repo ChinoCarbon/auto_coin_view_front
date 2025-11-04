@@ -60,10 +60,18 @@
               v-for="notification in notifications" 
               :key="notification.id"
               class="notification-item"
-              :class="{ 'is-unread': !notification.read }"
+              :class="{ 
+                'is-unread': !notification.read,
+                'is-sliding-window': notification.type === '滑动窗口提示' && !notification.read
+              }"
             >
               <div class="notification-header">
-                <span class="notification-type">{{ notification.type }}</span>
+                <span 
+                  class="notification-type" 
+                  :class="{ 'notification-type-sliding': notification.type === '滑动窗口提示' }"
+                >
+                  {{ notification.type }}
+                </span>
                 <span class="notification-time">{{ notification.time }}</span>
               </div>
               <div class="notification-content">
@@ -452,6 +460,11 @@ function markAllAsRead() {
   background: var(--n-card-color);
 }
 
+.notification-item.is-sliding-window {
+  border-left: 4px solid #52c41a !important;
+  background: var(--n-card-color);
+}
+
 .notification-item:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
@@ -470,6 +483,11 @@ function markAllAsRead() {
   padding: 2px 6px;
   background: #fff2f0;
   border-radius: 4px;
+}
+
+.notification-type-sliding {
+  color: #52c41a;
+  background: #f6ffed;
 }
 
 .notification-time {

@@ -190,6 +190,12 @@ const notification = useNotification()
 // 存储已触发的警告，避免重复触发
 const triggeredWarnings = ref(new Set())
 
+// 滑动窗口监控（每个币种一个窗口，长度为10）
+const slidingWindows = ref(new Map()) // key: coin, value: { data: [{timestamp, value}], windowSize: 10, lastAlertTimestamp: null }
+
+// 滑动窗口提示冷却期（每个币种最后一次提示的时间戳）
+const slidingWindowCooldown = ref(new Map()) // key: coin, value: { lastAlertTimestamp: timestamp, cooldownCount: 0 }
+
 // 快速下单确认模态框
 const showQuickOrderConfirmModal = ref(false)
 const quickOrderLoading = ref(false)
@@ -200,6 +206,225 @@ const quickOrderConfirmData = ref({
   positionSide: '',
   settings: null
 })
+
+// 从历史数据回填滑动窗口
+function fillSlidingWindowFromHistory(coin, row) {
+  if (!coin || !row || !row._rawByTime) {
+    return
+  }
+  
+  // 获取或创建窗口
+  if (!slidingWindows.value.has(coin)) {
+    slidingWindows.value.set(coin, {
+      data: [],
+      windowSize: 10
+    })
+  }
+  
+  const window = slidingWindows.value.get(coin)
+  
+  // 如果窗口已有数据，不需要回填
+  if (window.data.length > 0) {
+    return
+  }
+  
+  // 从历史数据中获取最近的数据点（按时间排序）
+  const historicalData = Object.keys(row._rawByTime)
+    .map(timestamp => ({
+      timestamp,
+      value: row._rawByTime[timestamp]
+    }))
+    .filter(item => item.value > 0) // 过滤掉无效数据
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp)) // 按时间排序
+  
+  // 取最后10个数据点填充窗口
+  const recentData = historicalData.slice(-window.windowSize)
+  
+  if (recentData.length > 0) {
+    window.data = recentData
+    console.log(`[滑动窗口回填] ${coin}: 从历史数据回填了 ${recentData.length} 个数据点`, {
+      data: recentData.map(d => ({
+        time: d.timestamp,
+        value: d.value.toFixed(2)
+      }))
+    })
+  }
+}
+
+// 更新滑动窗口并检查条件
+function updateSlidingWindow(coin, timestamp, value) {
+  if (!coin || !timestamp || !value || value <= 0) {
+    return
+  }
+  
+  // 获取或创建窗口
+  if (!slidingWindows.value.has(coin)) {
+    slidingWindows.value.set(coin, {
+      data: [],
+      windowSize: 10
+    })
+  }
+  
+  const window = slidingWindows.value.get(coin)
+  
+  // 如果窗口为空，尝试从历史数据回填
+  if (window.data.length === 0) {
+    // 查找对应的行数据
+    const row = tableData.find(r => r.coin === coin)
+    if (row) {
+      fillSlidingWindowFromHistory(coin, row)
+    }
+  }
+  
+  // 检查新数据点是否已存在（避免重复添加）
+  const existingIndex = window.data.findIndex(d => d.timestamp === timestamp)
+  if (existingIndex !== -1) {
+    // 如果已存在，更新值
+    window.data[existingIndex].value = value
+  } else {
+    // 添加新数据点
+    window.data.push({ timestamp, value })
+    
+    // 保持窗口大小不超过10
+    if (window.data.length > window.windowSize) {
+      window.data.shift() // 移除最旧的数据
+    }
+  }
+  
+  // 按时间排序窗口数据（确保顺序正确）
+  window.data.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  
+  // 打印窗口情况
+  console.log(`[滑动窗口] ${coin}:`, {
+    size: window.data.length,
+    data: window.data.map(d => ({
+      time: d.timestamp,
+      value: d.value.toFixed(2)
+    })),
+    first: window.data[0] ? { time: window.data[0].timestamp, value: window.data[0].value.toFixed(2) } : null,
+    last: window.data[window.data.length - 1] ? { time: window.data[window.data.length - 1].timestamp, value: window.data[window.data.length - 1].value.toFixed(2) } : null
+  })
+  
+  // 检查窗口条件（至少需要10个数据点）
+  if (window.data.length >= window.windowSize) {
+    checkSlidingWindow(coin, window)
+  }
+}
+
+// 检查滑动窗口条件
+function checkSlidingWindow(coin, window) {
+  if (window.data.length < window.windowSize) {
+    return
+  }
+  
+  const data = window.data
+  let riseCount = 0 // 上涨次数
+  
+  // 统计上涨次数（相邻数据点比较）
+  for (let i = 1; i < data.length; i++) {
+    if (data[i].value > data[i - 1].value) {
+      riseCount++
+    }
+  }
+  
+  // 计算尾部比头部的涨幅
+  const firstValue = data[0].value
+  const lastValue = data[data.length - 1].value
+  const risePercent = ((lastValue - firstValue) / firstValue) * 100
+  
+  // 打印检查结果
+  console.log(`[滑动窗口检查] ${coin}:`, {
+    riseCount,
+    risePercent: risePercent.toFixed(2) + '%',
+    firstValue: firstValue.toFixed(2),
+    lastValue: lastValue.toFixed(2),
+    condition1: riseCount >= 6 ? '✓' : '✗',
+    condition2: risePercent > 2 ? '✓' : '✗'
+  })
+  
+  // 检查条件：上涨次数 >= 6 且 尾部比头部涨幅 > 2%
+  if (riseCount >= 6 && risePercent > 2) {
+    // 检查冷却期：提示一次后10个数据点内不再提示
+    const lastAlert = slidingWindowCooldown.value.get(coin)
+    const currentTimestamp = data[data.length - 1].timestamp
+    
+    if (lastAlert) {
+      // 计算距离最后一次提示已经过了多少个数据点
+      // 从窗口中找到最后一次提示的时间戳位置
+      const lastAlertIndex = window.data.findIndex(d => d.timestamp === lastAlert.lastAlertTimestamp)
+      
+      if (lastAlertIndex !== -1) {
+        // 计算从最后一次提示到现在有多少个数据点
+        const dataPointsSinceLastAlert = window.data.length - 1 - lastAlertIndex
+        
+        // 如果还在冷却期内（10个数据点内），不提示
+        if (dataPointsSinceLastAlert < 10) {
+          console.log(`[滑动窗口冷却] ${coin}: 距离上次提示还有${10 - dataPointsSinceLastAlert}个数据点，跳过提示`)
+          return
+        }
+      } else {
+        // 如果最后一次提示的时间戳不在当前窗口中，说明已经过了10个数据点，清除冷却期记录
+        console.log(`[滑动窗口冷却] ${coin}: 最后一次提示的时间戳不在当前窗口中，清除冷却期`)
+        slidingWindowCooldown.value.delete(coin)
+      }
+    }
+    
+    // 触发提示
+    const warningKey = `${coin}-sliding-window-${currentTimestamp}`
+    
+    // 避免重复触发
+    if (triggeredWarnings.value.has(warningKey)) {
+      return
+    }
+    
+    triggeredWarnings.value.add(warningKey)
+    
+    // 更新冷却期记录
+    slidingWindowCooldown.value.set(coin, {
+      lastAlertTimestamp: currentTimestamp,
+      cooldownCount: 0
+    })
+    
+    // 创建通知对象
+    const notification = {
+      id: Date.now() + Math.random(),
+      coin,
+      timestamp: currentTimestamp,
+      type: '滑动窗口提示',
+      actualValue: risePercent,
+      threshold: 2,
+      formattedActual: `${risePercent.toFixed(2)}%`,
+      formattedThreshold: '2%',
+      time: new Date().toLocaleTimeString(),
+      riseCount: riseCount,
+      windowSize: window.windowSize
+    }
+    
+    // 发送通知事件到父组件
+    emit('notification-added', notification)
+    
+    // 播放滑动窗口提示音（与阈值警告音不同）
+    if (soundEnabled.value) {
+      playSlidingWindowAlertSound()
+    }
+    
+    console.log(`[滑动窗口提示] ${coin}: 上涨次数=${riseCount}, 涨幅=${risePercent.toFixed(2)}%, 已设置冷却期`)
+  }
+}
+
+// 删除币种的滑动窗口
+function removeSlidingWindow(coin) {
+  if (slidingWindows.value.has(coin)) {
+    slidingWindows.value.delete(coin)
+    console.log(`[滑动窗口] 删除币种 ${coin} 的窗口`)
+  }
+  
+  // 同时删除冷却期记录
+  if (slidingWindowCooldown.value.has(coin)) {
+    slidingWindowCooldown.value.delete(coin)
+    console.log(`[滑动窗口冷却] 删除币种 ${coin} 的冷却期记录`)
+  }
+}
 
 // 触发阈值警告
 function triggerThresholdWarning(coin, timestamp, type, actualValue, threshold) {
@@ -289,7 +514,7 @@ function playAlertSound() {
   }
 }
 
-// 实际播放声音的函数
+// 实际播放声音的函数（阈值警告音：三声短促的"哔"声）
 function playSound(audioContext) {
   try {
     const oscillator = audioContext.createOscillator()
@@ -298,7 +523,7 @@ function playSound(audioContext) {
     oscillator.connect(gainNode)
     gainNode.connect(audioContext.destination)
     
-    // 创建更明显的提示音：三声短促的"哔"声
+    // 创建更明显的提示音：三声短促的"哔"声（1000Hz）
     oscillator.frequency.setValueAtTime(1000, audioContext.currentTime)
     oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.1)
     oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.2)
@@ -314,6 +539,67 @@ function playSound(audioContext) {
     oscillator.stop(audioContext.currentTime + 0.3)
   } catch (err) {
     console.warn('声音播放失败:', err)
+  }
+}
+
+// 播放滑动窗口提示音（上升音调）
+function playSlidingWindowSound(audioContext) {
+  try {
+    const oscillator = audioContext.createOscillator()
+    const gainNode = audioContext.createGain()
+    
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+    
+    // 创建上升音调：从800Hz上升到1200Hz，持续0.4秒
+    const startFreq = 800
+    const endFreq = 1200
+    const duration = 0.4
+    
+    oscillator.frequency.setValueAtTime(startFreq, audioContext.currentTime)
+    oscillator.frequency.exponentialRampToValueAtTime(endFreq, audioContext.currentTime + duration)
+    
+    // 音量渐变：快速上升，然后缓慢下降
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime)
+    gainNode.gain.linearRampToValueAtTime(0.6, audioContext.currentTime + 0.1)
+    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + duration)
+    
+    oscillator.start(audioContext.currentTime)
+    oscillator.stop(audioContext.currentTime + duration)
+  } catch (err) {
+    console.warn('滑动窗口提示音播放失败:', err)
+  }
+}
+
+// 播放滑动窗口提示音（入口函数）
+function playSlidingWindowAlertSound() {
+  // 检查提示音开关
+  if (!soundEnabled.value) {
+    return
+  }
+  
+  try {
+    // 检查浏览器是否支持Web Audio API
+    if (!window.AudioContext && !window.webkitAudioContext) {
+      console.warn('浏览器不支持Web Audio API')
+      return
+    }
+    
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+    
+    // 检查音频上下文状态
+    if (audioContext.state === 'suspended') {
+      // 尝试恢复音频上下文（需要用户交互）
+      audioContext.resume().then(() => {
+        playSlidingWindowSound(audioContext)
+      }).catch(err => {
+        console.warn('无法恢复音频上下文:', err)
+      })
+    } else {
+      playSlidingWindowSound(audioContext)
+    }
+  } catch (err) {
+    console.warn('音频播放失败:', err)
   }
 }
 
@@ -799,6 +1085,13 @@ async function restoreHistoricalData() {
   const sortedTimes = Array.from(allTimePoints).sort();
   timeColumns.value = sortedTimes
   
+  // 恢复历史数据后，回填所有币种的滑动窗口
+  for (const row of tableData) {
+    if (row._rawByTime && Object.keys(row._rawByTime).length > 0) {
+      fillSlidingWindowFromHistory(row.coin, row)
+    }
+  }
+  
   // 重建列定义
   const newColumns = [
     selectionColumn, // 添加选择列
@@ -1021,6 +1314,9 @@ async function refreshTable() {
             row._changePercent = undefined
           }
         }
+        
+        // 更新滑动窗口
+        updateSlidingWindow(row.coin, timestamp, raw)
       }
     })
     
@@ -1113,6 +1409,9 @@ async function checkServerCoinsSync() {
         if (idx !== -1) internalCoins.value.splice(idx, 1)
         const rowIdx = tableData.findIndex((r) => r.coin === coin)
         if (rowIdx !== -1) tableData.splice(rowIdx, 1)
+        
+        // 删除币种的滑动窗口
+        removeSlidingWindow(coin)
         
         // user 模式：同时从 localStorage 中删除
         if (props.currentUser) {
@@ -1519,6 +1818,9 @@ async function deleteCoin(coin) {
       if (idx !== -1) internalCoins.value.splice(idx, 1)
       const rowIdx = tableData.findIndex((r) => r.coin === coin)
       if (rowIdx !== -1) tableData.splice(rowIdx, 1)
+      
+      // 删除币种的滑动窗口
+      removeSlidingWindow(coin)
       
       // 通知父组件币列表变化和删除事件
       emit('update:coins', [...internalCoins.value])
