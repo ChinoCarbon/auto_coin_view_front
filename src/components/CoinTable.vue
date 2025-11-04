@@ -640,8 +640,38 @@ async function loadNewCoinHistoricalData(row) {
 
 // 重新构建列定义以包含时间数据
 async function rebuildColumnsWithTimeData() {
+  // 收集所有行中实际存在的时间戳（从 _rawByTime 和行属性中收集）
+  const allTimeStamps = new Set(timeColumns.value)
+  
+  // 遍历所有行，收集它们的时间戳
+  tableData.forEach(row => {
+    // 从 _rawByTime 中收集时间戳（最可靠的数据源）
+    if (row._rawByTime && typeof row._rawByTime === 'object') {
+      Object.keys(row._rawByTime).forEach(timestamp => {
+        allTimeStamps.add(timestamp)
+      })
+    }
+    
+    // 也从行对象本身收集时间戳属性（排除已知的特殊属性）
+    const specialKeys = new Set([
+      'coin', '_rawByTime', '_dropAmountThreshold', '_dropPercentThreshold',
+      '_firstCapture', '_latestTimestamp', '_dataCount', '_isMonitored',
+      '_needsReload', '_changePercent'
+    ])
+    
+    Object.keys(row).forEach(key => {
+      if (!specialKeys.has(key)) {
+        // 检查是否是时间戳格式（包含冒号或符合时间戳格式）
+        // 时间戳格式可能是：'21:41:04' 或 'K21:41:04' 等
+        if (typeof key === 'string' && key.includes(':')) {
+          allTimeStamps.add(key)
+        }
+      }
+    })
+  })
+  
   // 按时间排序
-  const sortedTimes = [...timeColumns.value].sort()
+  const sortedTimes = Array.from(allTimeStamps).sort()
   timeColumns.value = sortedTimes
   
   // 重建列定义
@@ -876,147 +906,190 @@ const debouncedRefresh = () => {
   refreshTimeout = setTimeout(refreshTable, 100) // 100ms防抖
 }
 
+// 刷新标志，防止重复执行
+let isRefreshing = false
+
 // 刷新表格
 async function refreshTable() {
-  // 如果管理员列表为空，直接返回
-  if (internalCoins.value.length === 0) {
-    console.log('管理员列表为空，跳过数据请求')
+  // 如果正在刷新，直接返回，避免重复请求
+  if (isRefreshing) {
+    console.log('refreshTable 正在执行，跳过重复调用')
     return
   }
   
-  // 批量请求所有币（返回新格式数据）
-  const batchResults = await getBatchCoinPositions(internalCoins.value)
-  const results = internalCoins.value.map(coin => batchResults[coin] || { value: 0, timestamp: null, dataCount: 0, isMonitored: false })
-
-  // 收集所有新的时间戳
-  const newTimestamps = new Set()
-  
-  // 检查是否有新币种第一次有数据，需要重新加载
-  let needsReload = false
-  
-  // 更新表格数据
-  tableData.forEach((row, idx) => {
-    const coinData = results[idx]
-    const { value: raw, timestamp, dataCount, isMonitored } = coinData
+  try {
+    isRefreshing = true
     
-    // 检查时间是否比当前最新时间更新
-    const shouldUpdate = timestamp && (!row._latestTimestamp || timestamp > row._latestTimestamp)
-    
-    if (shouldUpdate) {
-      // 数据更新逻辑
+    // 如果管理员列表为空，直接返回
+    if (internalCoins.value.length === 0) {
+      console.log('管理员列表为空，跳过数据请求')
+      return
     }
     
-    if (shouldUpdate) {
-      const display = formatDisplayNumber(raw)
-      
-      // 使用后端返回的时间戳作为列名
-      row[timestamp] = display
-      // 保存原始值用于 tooltip 与涨跌计算
-      if (!row._rawByTime) row._rawByTime = {}
-      row._rawByTime[timestamp] = raw
-      
-      // 更新最新时间戳
-      row._latestTimestamp = timestamp
-      row._dataCount = dataCount
-      row._isMonitored = isMonitored
-      
-      // 收集新的时间戳
-      if (!timeColumns.value.includes(timestamp)) {
-        newTimestamps.add(timestamp)
-      }
-      
-      // 如果是新添加的币种第一次有数据，标记需要重新加载
-      if (row._needsReload && raw > 0) {
-        needsReload = true
-        row._needsReload = false // 清除标记
-      }
-      
-      // 如果 _firstCapture 不存在且有有效数据，设置基准（首次数据）
-      if (!row._firstCapture && raw > 0) {
-        row._firstCapture = {
-          time: timestamp,
-          value: display,
-          baseline: raw
-        }
-        console.log(`${row.coin} 首次数据，设置基准时间: ${timestamp}, 基准价格: ${raw}`)
-      }
-      
-      // 计算相对首次值的涨跌百分比
-      if (row._firstCapture && raw > 0) {
-        const baseline = typeof row._firstCapture.baseline === 'number' && isFinite(row._firstCapture.baseline)
-          ? row._firstCapture.baseline
-          : parseDisplayToNumber(row._firstCapture.value)
-        const current = raw
-        if (isFinite(baseline) && baseline !== 0 && isFinite(current) && current > 0) {
-          row._changePercent = ((current - baseline) / baseline) * 100
-        } else {
-          row._changePercent = undefined
-        }
-      }
-    }
-  })
-  
-  // 如果有新币种第一次有数据，触发重新加载
-  if (needsReload) {
-    const serverCoins = await fetchPoolCoins()
-    await rebuildTableForCoins(serverCoins)
-    await restoreHistoricalData()
-    
-    // 立即再调用一次 refreshTable，为新币设置 _firstCapture
-    // 第二次调用时 needsReload = false，会正常执行设置逻辑
-    await refreshTable()
-    return
-  }
+    // 批量请求所有币（返回新格式数据）
+    const batchResults = await getBatchCoinPositions(internalCoins.value)
+    const results = internalCoins.value.map(coin => batchResults[coin] || { value: 0, timestamp: null, dataCount: 0, isMonitored: false })
 
-  // 添加新时间戳列（去重后）
-  const sortedNewTimestamps = Array.from(newTimestamps).sort();
-  sortedNewTimestamps.forEach(timestamp => {
-    const newCol = {
-      title: timestamp.replace(/^[A-Z]/, ''), // 去掉字母前缀
-      key: timestamp,
-      width: CELL_WIDTH,
-      render: (row) => {
-        // 检查这个时间戳是否真的是新数据（比最新时间戳更新）
-        const isReallyNewData = row._latestTimestamp === timestamp
-        const cellStyle = getCellColor(row, timestamp, isReallyNewData)
+    // 收集所有新的时间戳
+    const newTimestamps = new Set()
+    
+    // 检查是否有新币种第一次有数据，需要重新加载
+    let needsReload = false
+    
+    // 更新表格数据
+    tableData.forEach((row, idx) => {
+      const coinData = results[idx]
+      const { value: raw, timestamp, dataCount, isMonitored } = coinData
+      
+      // 检查时间是否比当前最新时间更新
+      const shouldUpdate = timestamp && (!row._latestTimestamp || timestamp > row._latestTimestamp)
+      
+      if (shouldUpdate) {
+        // 数据更新逻辑
+      }
+      
+      if (shouldUpdate) {
+        const display = formatDisplayNumber(raw)
         
-        // 确保显示值不为 undefined
-        const displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
-        const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
+        // 使用后端返回的时间戳作为列名
+        row[timestamp] = display
+        // 保存原始值用于 tooltip 与涨跌计算
+        if (!row._rawByTime) row._rawByTime = {}
+        row._rawByTime[timestamp] = raw
         
-        return h(
-          NTooltip,
-          { placement: 'top' },
-          {
-            trigger: () => h('span', { style: cellStyle }, displayValue),
-            default: () => formatWithSeparators(rawValue)
+        // 更新最新时间戳
+        row._latestTimestamp = timestamp
+        row._dataCount = dataCount
+        row._isMonitored = isMonitored
+        
+        // 收集新的时间戳
+        if (!timeColumns.value.includes(timestamp)) {
+          newTimestamps.add(timestamp)
+        }
+        
+        // 如果是新添加的币种第一次有数据，标记需要重新加载
+        if (row._needsReload && raw > 0) {
+          needsReload = true
+          row._needsReload = false // 清除标记
+        }
+        
+        // 如果 _firstCapture 不存在且有有效数据，设置基准（首次数据）
+        if (!row._firstCapture && raw > 0) {
+          // 对于新添加的币种，需要判断这是否是历史时间戳
+          // 判断逻辑：
+          // 1. 如果时间戳不在历史数据中，是新数据，应该设置基准
+          // 2. 如果时间戳在历史数据中存在，需要检查：
+          //    - 如果这是当前最新的时间戳（比之前的 _latestTimestamp 更新），说明这是实时数据，应该设置基准
+          //    - 如果这不是最新的时间戳，说明是历史数据，不设置基准，等待新的实时数据
+          const historicalValue = row._rawByTime && row._rawByTime[timestamp]
+          const isHistoricalTimestamp = historicalValue !== undefined
+          
+          // 检查这是否是当前最新的时间戳（实时数据）
+          const isLatestTimestamp = !row._latestTimestamp || timestamp >= row._latestTimestamp
+          
+          if (!isHistoricalTimestamp) {
+            // 这是一个新的时间戳，可以作为基准
+            row._firstCapture = {
+              time: timestamp,
+              value: display,
+              baseline: raw
+            }
+            console.log(`${row.coin} 首次数据，设置基准时间: ${timestamp}, 基准价格: ${raw}`)
+          } else if (isLatestTimestamp) {
+            // 时间戳在历史数据中存在，但这是最新的时间戳（实时数据），应该设置基准
+            row._firstCapture = {
+              time: timestamp,
+              value: display,
+              baseline: raw
+            }
+            console.log(`${row.coin} 首次数据（实时数据），设置基准时间: ${timestamp}, 基准价格: ${raw}`)
+          } else {
+            // 这是历史时间戳且不是最新的，可能是竞态条件导致的重复请求，不设置基准，等待新的实时数据
+            console.log(`${row.coin} 跳过历史时间戳作为基准: ${timestamp}, 等待新的实时数据`)
           }
-        )
+        }
+        
+        // 计算相对首次值的涨跌百分比
+        if (row._firstCapture && raw > 0) {
+          const baseline = typeof row._firstCapture.baseline === 'number' && isFinite(row._firstCapture.baseline)
+            ? row._firstCapture.baseline
+            : parseDisplayToNumber(row._firstCapture.value)
+          const current = raw
+          if (isFinite(baseline) && baseline !== 0 && isFinite(current) && current > 0) {
+            row._changePercent = ((current - baseline) / baseline) * 100
+          } else {
+            row._changePercent = undefined
+          }
+        }
       }
-    };
-    const last = columns.value[columns.value.length - 1];
-    const secondLast = columns.value[columns.value.length - 2];
+    })
     
-    // 如果最后两列是阈值列和操作列，则在阈值列之前插入新列
-    if (last && last.key === 'actions' && secondLast && secondLast.key === 'thresholds') {
-      columns.value.splice(columns.value.length - 2, 0, newCol);
-    } else if (last && last.key === 'actions') {
-      columns.value.splice(columns.value.length - 1, 0, newCol);
-    } else {
-      columns.value.push(newCol);
+    // 如果有新币种第一次有数据，触发重新加载
+    if (needsReload) {
+      const serverCoins = await fetchPoolCoins()
+      await rebuildTableForCoins(serverCoins)
+      await restoreHistoricalData()
+      
+      // 立即再调用一次 refreshTable，为新币设置 _firstCapture
+      // 第二次调用时 needsReload = false，会正常执行设置逻辑
+      // 注意：需要先重置标志，否则递归调用会被跳过
+      isRefreshing = false
+      await refreshTable()
+      return
     }
-    timeColumns.value.push(timestamp);
-  });
-  
-  // 更新滚动宽度
-  updateScrollX();
-  
-  // 如果有新列，滚动到最右侧
-  if (sortedNewTimestamps.length > 0) {
-    await scrollToRightMost()
+
+    // 添加新时间戳列（去重后）
+    const sortedNewTimestamps = Array.from(newTimestamps).sort();
+    sortedNewTimestamps.forEach(timestamp => {
+      const newCol = {
+        title: timestamp.replace(/^[A-Z]/, ''), // 去掉字母前缀
+        key: timestamp,
+        width: CELL_WIDTH,
+        render: (row) => {
+          // 检查这个时间戳是否真的是新数据（比最新时间戳更新）
+          const isReallyNewData = row._latestTimestamp === timestamp
+          const cellStyle = getCellColor(row, timestamp, isReallyNewData)
+          
+          // 确保显示值不为 undefined
+          const displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
+          const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
+          
+          return h(
+            NTooltip,
+            { placement: 'top' },
+            {
+              trigger: () => h('span', { style: cellStyle }, displayValue),
+              default: () => formatWithSeparators(rawValue)
+            }
+          )
+        }
+      };
+      const last = columns.value[columns.value.length - 1];
+      const secondLast = columns.value[columns.value.length - 2];
+      
+      // 如果最后两列是阈值列和操作列，则在阈值列之前插入新列
+      if (last && last.key === 'actions' && secondLast && secondLast.key === 'thresholds') {
+        columns.value.splice(columns.value.length - 2, 0, newCol);
+      } else if (last && last.key === 'actions') {
+        columns.value.splice(columns.value.length - 1, 0, newCol);
+      } else {
+        columns.value.push(newCol);
+      }
+      timeColumns.value.push(timestamp);
+    });
+    
+    // 更新滚动宽度
+    updateScrollX();
+    
+    // 如果有新列，滚动到最右侧
+    if (sortedNewTimestamps.length > 0) {
+      await scrollToRightMost()
+    }
+    
+    emit('table-refreshed')
+  } finally {
+    isRefreshing = false
   }
-  
-  emit('table-refreshed')
 }
 
 // 检查服务器币列表是否有变化
@@ -1064,11 +1137,12 @@ async function checkServerCoinsSync() {
           })
           tableData.push(newRow)
           
-          // 尝试获取新币的历史信息
-          const coinInfo = await fetchCoinInfo(coin)
-          if (coinInfo) {
-            newRow._firstCapture = coinInfo
-          }
+          // 不设置 _firstCapture，等待第一次实时数据
+          // 这样无论是新币还是重新加入的币种，都会等待下一个新数据出现才确定时间
+          // const coinInfo = await fetchCoinInfo(coin)  // 注释掉：不使用历史数据的时间基准
+          // if (coinInfo) {
+          //   newRow._firstCapture = coinInfo
+          // }
           
           // 标记为需要重新加载的币种
           newRow._needsReload = true
@@ -1112,7 +1186,8 @@ async function addCoin(value) {
         })
         tableData.push(newRow)
         
-        // 查询新币的历史数据（从添加时间点往前1小时）
+        // 加载历史数据用于显示，但不设置 _firstCapture
+        // 这样无论是新币还是重新加入的币种，都会等待下一个新数据出现才确定时间基准
         await loadNewCoinHistoricalData(newRow)
         
         // 标记为需要重新加载的币种
@@ -1884,7 +1959,7 @@ onMounted(async () => {
   await restoreHistoricalData() // 恢复历史数据
   
   // 启动定时器
-  setInterval(refreshTable, 5 * 1000) // 每5秒刷新数据（降低频率）
+  setInterval(refreshTable, 15 * 1000) // 每5秒刷新数据（降低频率）
   setInterval(checkServerCoinsSync, 30 * 1000) // 每30秒检查币列表同步（降低频率）
   
   // 首次刷新

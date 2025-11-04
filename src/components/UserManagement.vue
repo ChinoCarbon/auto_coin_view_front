@@ -1564,19 +1564,21 @@ async function fetchAllOrders() {
 let wsConnection = null
 let wsHeartbeatInterval = null
 let wsLastMessageTime = 0
+let wsMessageCount = 0
+let wsUpdateCount = 0
+let wsErrorCount = 0
 
 // 更新仓位价格
 function updatePositionPrices(symbol, currentPrice) {
-  console.log(`🔍 查找需要更新价格的仓位: ${symbol} = $${currentPrice}`)
   let hasUpdate = false
   let foundPositions = 0
+  const updateStartTime = Date.now()
   
   // 创建新的users数组，确保响应式更新
   const newUsers = users.value.map(user => {
     const newPositions = user.positions.map(position => {
       if (position.symbol === symbol) {
         foundPositions++
-        console.log(`📍 找到匹配仓位: 用户=${user.alias}, 仓位=${position.symbol}, 当前盈亏=${position.unrealizedPnl}`)
         
         // 获取原始数据（从API获取的固定数据，刷新时更新）
         const originalEntryPrice = position.originalEntryPrice || position.entryPrice
@@ -1633,12 +1635,6 @@ function updatePositionPrices(symbol, currentPrice) {
         const profitChanged = Math.abs(position.unrealizedPnl - newUnrealizedPnl) > 0.01
         const percentageChanged = Math.abs(position.percentage - newPercentage) > 0.01
         
-        console.log(`✅ 已更新仓位: 用户=${user.alias}, 币种=${symbol}, 新盈亏=${newUnrealizedPnl.toFixed(2)}, 新收益率=${newPercentage.toFixed(2)}%`)
-        
-        if (position.side === 'SHORT') {
-          console.log(`空头计算: 入场价=${originalEntryPrice.toFixed(6)}, 当前价=${currentPrice.toFixed(6)}, 持仓量=${originalAmount.toFixed(6)}, 盈亏=${newUnrealizedPnl.toFixed(2)} (入场价-当前价=${(originalEntryPrice - currentPrice).toFixed(6)})`)
-        }
-        
         hasUpdate = true
         
         // 返回更新后的仓位
@@ -1668,8 +1664,6 @@ function updatePositionPrices(symbol, currentPrice) {
     }
   })
   
-  console.log(`📊 价格更新总结: 找到 ${foundPositions} 个匹配仓位，更新了 ${hasUpdate ? '是' : '否'}`)
-  
   // 如果有更新，替换整个users数组
   if (hasUpdate) {
     users.value = newUsers
@@ -1688,15 +1682,32 @@ function updatePositionPrices(symbol, currentPrice) {
       })
     })
   }
+  
+  // 调试信息：记录价格更新统计
+  const updateTime = Date.now() - updateStartTime
+  if (foundPositions > 0) {
+    console.log(`💰 价格更新: ${symbol} = $${currentPrice} | 匹配仓位: ${foundPositions}个 | 耗时: ${updateTime}ms`)
+  }
 }
 
 // 启动WebSocket价格订阅
 function startWebSocketSubscription() {
   // 收集所有要订阅的 symbol
   const symbols = new Set()
+  const userSymbolMap = new Map() // 记录每个币种对应的用户
+  
   users.value.forEach(user => {
     user.positions.forEach(pos => {
-      if (pos.symbol) symbols.add(pos.symbol.toLowerCase())
+      if (pos.symbol) {
+        const symbol = pos.symbol.toLowerCase()
+        symbols.add(symbol)
+        
+        // 记录币种对应的用户
+        if (!userSymbolMap.has(symbol)) {
+          userSymbolMap.set(symbol, [])
+        }
+        userSymbolMap.get(symbol).push(user.alias)
+      }
     })
   })
 
@@ -1709,10 +1720,18 @@ function startWebSocketSubscription() {
   const streams = Array.from(symbols).map(s => `${s}@ticker`).join('/')
   const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
 
-  console.log('🔗 启动 WebSocket 订阅:', wsUrl)
+  console.log('🔗 WebSocket订阅信息:')
+  console.log(`   📊 订阅币种数量: ${symbols.size}`)
+  console.log(`   📋 币种列表: ${Array.from(symbols).join(', ')}`)
+  console.log(`   🔗 订阅URL长度: ${wsUrl.length} 字符`)
+  console.log(`   📍 币种用户分布:`)
+  userSymbolMap.forEach((users, symbol) => {
+    console.log(`      ${symbol.toUpperCase()}: ${users.join(', ')}`)
+  })
 
   // 如果已有连接存在，先安全关闭
   if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    console.log('🔄 关闭现有WebSocket连接，重新建立连接')
     try {
       wsConnection.close(1000, 'restart')
     } catch (_) {}
@@ -1721,37 +1740,129 @@ function startWebSocketSubscription() {
   wsConnection = new WebSocket(wsUrl)
 
   wsConnection.onopen = () => {
-    console.log('✅ WebSocket 已连接')
+    console.log('✅ WebSocket 连接成功建立')
     wsLastMessageTime = Date.now()
     startHeartbeat()
   }
 
   wsConnection.onmessage = (event) => {
     wsLastMessageTime = Date.now()
+    wsMessageCount++
+    const messageTime = new Date().toLocaleTimeString()
+    
     try {
       const payload = JSON.parse(event.data)
-      const ticker = payload?.data
-      if (ticker?.s && ticker?.c) {
-        const price = parseFloat(ticker.c)
-        updatePositionPrices(ticker.s, price)
+      
+      // 处理单个ticker消息
+      if (payload.data && payload.data.s) {
+        const ticker = payload.data
+        if (ticker.s && ticker.c) {
+          const price = parseFloat(ticker.c)
+          console.log(`📈 [${messageTime}] 收到价格: ${ticker.s} = $${price}`)
+          updatePositionPrices(ticker.s, price)
+          wsUpdateCount++
+        }
       }
+      
+      // 处理批量ticker消息
+      if (payload.data && Array.isArray(payload.data)) {
+        console.log(`📈 [${messageTime}] 收到批量价格更新: ${payload.data.length} 个币种`)
+        payload.data.forEach((ticker, index) => {
+          if (ticker.s && ticker.c) {
+            const price = parseFloat(ticker.c)
+            console.log(`📈 [${messageTime}] 批量[${index + 1}]: ${ticker.s} = $${price}`)
+            updatePositionPrices(ticker.s, price)
+            wsUpdateCount++
+          }
+        })
+      }
+      
+      // 处理流格式消息
+      if (payload.stream && payload.data) {
+        const streamName = payload.stream
+        if (streamName.includes('@ticker')) {
+          const symbol = streamName.split('@')[0].toUpperCase()
+          const ticker = payload.data
+          if (ticker.s && ticker.c) {
+            const price = parseFloat(ticker.c)
+            console.log(`📈 [${messageTime}] 流格式: ${symbol} = $${price}`)
+            updatePositionPrices(symbol, price)
+            wsUpdateCount++
+          }
+        }
+      }
+      
+      // 记录未处理的消息格式
+      if (!payload.data && !payload.stream) {
+        console.log(`❓ [${messageTime}] 未知消息格式:`, payload)
+      }
+      
     } catch (err) {
-      console.warn('⚠️ WebSocket 消息解析错误:', err)
+      wsErrorCount++
+      console.warn(`⚠️ [${messageTime}] WebSocket 消息解析错误:`, err)
+      console.warn('原始消息:', event.data)
     }
   }
 
   wsConnection.onerror = (error) => {
-    console.error('❌ WebSocket 错误:', error)
+    console.error('❌ WebSocket 连接错误:', error)
+    console.error('错误详情:', {
+      type: error.type,
+      target: error.target,
+      readyState: wsConnection?.readyState,
+      url: wsUrl
+    })
   }
 
   wsConnection.onclose = (event) => {
-    console.log(`🔌 WebSocket 关闭: code=${event.code}, reason=${event.reason}`)
+    const closeTime = new Date().toLocaleTimeString()
+    console.log(`🔌 [${closeTime}] WebSocket 连接关闭:`)
+    console.log(`   📊 关闭代码: ${event.code}`)
+    console.log(`   📝 关闭原因: ${event.reason || '未知'}`)
+    console.log(`   🔄 是否正常关闭: ${event.code === 1000 ? '是' : '否'}`)
+    console.log(`   ⏰ 连接持续时间: ${Date.now() - wsLastMessageTime}ms`)
+    
     stopHeartbeat()
+    
     // 断线自动重连（5 秒后）
     if (autoRefresh.value) {
-      setTimeout(() => startWebSocketSubscription(), 5000)
+      console.log('🔄 5秒后自动重连...')
+      setTimeout(() => {
+        console.log('🔄 开始自动重连...')
+        startWebSocketSubscription()
+      }, 5000)
     }
   }
+}
+
+// WebSocket状态监控
+function getWebSocketStatus() {
+  const now = Date.now()
+  const idleTime = now - wsLastMessageTime
+  const connectionState = wsConnection ? wsConnection.readyState : -1
+  
+  const status = {
+    connected: connectionState === WebSocket.OPEN,
+    state: connectionState === 0 ? 'CONNECTING' : 
+           connectionState === 1 ? 'OPEN' : 
+           connectionState === 2 ? 'CLOSING' : 
+           connectionState === 3 ? 'CLOSED' : 'UNKNOWN',
+    lastMessage: new Date(wsLastMessageTime).toLocaleTimeString(),
+    idleTime: Math.round(idleTime / 1000),
+    messageCount: wsMessageCount,
+    updateCount: wsUpdateCount,
+    errorCount: wsErrorCount,
+    successRate: wsMessageCount > 0 ? ((wsUpdateCount / wsMessageCount) * 100).toFixed(1) : 0
+  }
+  
+  console.log('📊 WebSocket状态监控:')
+  console.log(`   🔗 连接状态: ${status.connected ? '✅ 已连接' : '❌ 未连接'} (${status.state})`)
+  console.log(`   📨 消息统计: 总计 ${status.messageCount} 条，成功更新 ${status.updateCount} 条`)
+  console.log(`   📈 成功率: ${status.successRate}%`)
+  console.log(`   ⚠️ 错误次数: ${status.errorCount}`)
+  console.log(`   ⏰ 最后消息: ${status.lastMessage} (${status.idleTime}秒前)`)
+  
+  return status
 }
 
 // 🫀 启动心跳检测（每 20 s ping 一次，60 s 超时）
@@ -1764,12 +1875,23 @@ function startHeartbeat() {
 
     // 发送心跳包（部分客户端不会触发真正 ping/pong，作用是保持活动）
     if (wsConnection.readyState === WebSocket.OPEN) {
-      try { wsConnection.send('ping') } catch (_) {}
+      try { 
+        wsConnection.send('ping') 
+        console.log('💓 发送心跳包')
+      } catch (err) {
+        console.warn('💓 心跳包发送失败:', err)
+      }
+    }
+
+    // 每60秒输出一次状态监控
+    if (idle > 0 && idle % 60000 < 20000) {
+      getWebSocketStatus()
     }
 
     // 超过 60 s 未收到消息则判定断线
     if (idle > 60000) {
       console.warn('💔 WebSocket 心跳超时，尝试重连...')
+      console.warn(`   空闲时间: ${Math.round(idle / 1000)}秒`)
       try { wsConnection.close(4000, 'heartbeat timeout') } catch (_) {}
     }
   }, 20000)
@@ -3308,6 +3430,10 @@ watch(() => tpSlModal.value.stopLoss.enabled, () => {
     updateTpSlCalculations()
   }
 })
+
+// 暴露到全局，方便调试
+window.getWebSocketStatus = getWebSocketStatus
+window.startWebSocketSubscription = startWebSocketSubscription
 </script>
 
 <style scoped>
