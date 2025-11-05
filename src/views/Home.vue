@@ -75,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V8.0 （滑动窗口提示上涨测试版）</span>
+        <span class="footer-title">动态表格 V8.1</span>
       </div>
     </n-layout-footer>
     

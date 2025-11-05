@@ -385,19 +385,20 @@ function checkSlidingWindow(coin, window) {
       cooldownCount: 0
     })
     
-    // 创建通知对象
+    // 创建通知对象（标题改为“涨幅”，内容为“近xx个数据上涨xx次，涨幅为xx%”）
     const notification = {
       id: Date.now() + Math.random(),
       coin,
       timestamp: currentTimestamp,
-      type: '滑动窗口提示',
+      type: '涨幅',
       actualValue: risePercent,
       threshold: 2,
       formattedActual: `${risePercent.toFixed(2)}%`,
       formattedThreshold: '2%',
       time: new Date().toLocaleTimeString(),
       riseCount: riseCount,
-      windowSize: window.windowSize
+      windowSize: window.windowSize,
+      description: `近${window.windowSize}个数据上涨${riseCount}次，涨幅为${risePercent.toFixed(2)}%`
     }
     
     // 发送通知事件到父组件

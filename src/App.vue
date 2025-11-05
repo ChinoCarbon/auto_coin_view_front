@@ -62,13 +62,13 @@
               class="notification-item"
               :class="{ 
                 'is-unread': !notification.read,
-                'is-sliding-window': notification.type === '滑动窗口提示' && !notification.read
+                'is-sliding-window': notification.type === '涨幅' && !notification.read
               }"
             >
               <div class="notification-header">
                 <span 
                   class="notification-type" 
-                  :class="{ 'notification-type-sliding': notification.type === '滑动窗口提示' }"
+                  :class="{ 'notification-type-sliding': notification.type === '涨幅' }"
                 >
                   {{ notification.type }}
                 </span>
@@ -78,7 +78,12 @@
                 <strong>{{ notification.coin }}</strong> 在 {{ notification.timestamp }}
               </div>
               <div class="notification-details">
-                {{ notification.type }}为{{ notification.formattedActual }}，超过阈值{{ notification.formattedThreshold }}
+                <template v-if="notification.description">
+                  {{ notification.description }}
+                </template>
+                <template v-else>
+                  {{ notification.type }}为{{ notification.formattedActual }}，超过阈值{{ notification.formattedThreshold }}
+                </template>
               </div>
               <div class="notification-actions">
                 <n-button 
