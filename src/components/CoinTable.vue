@@ -40,6 +40,20 @@
       >
         导出今日全部数据
       </n-button>
+      
+      <!-- 以百分比显示开关 -->
+      <n-switch 
+        v-model:value="showAsPercent" 
+        size="small"
+        style="margin-left: 8px;"
+      >
+        <template #checked>
+          以百分比显示
+        </template>
+        <template #unchecked>
+          以百分比显示
+        </template>
+      </n-switch>
     </div>
     
      <!-- 颜色含义说明 -->
@@ -144,14 +158,53 @@
         </n-button>
       </template>
     </n-modal>
+    
+    <!-- 高频请求模态框 -->
+    <n-modal v-model:show="showHighFrequencyModal" preset="dialog" title="高频请求" size="large" style="width: 90%; max-width: 1200px;">
+      <div>
+        <n-descriptions :column="1" bordered style="margin-bottom: 16px;">
+          <n-descriptions-item label="币种">
+            <n-tag type="info">{{ highFrequencyCoin }}</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item label="数据点数量">
+            {{ highFrequencyData.length }}
+          </n-descriptions-item>
+        </n-descriptions>
+        
+        <!-- 折线图 -->
+        <div style="margin-bottom: 24px;">
+          <div ref="chartRef" style="width: 100%; height: 400px;"></div>
+        </div>
+        
+        <!-- 数据表格 -->
+        <div style="overflow-x: auto;">
+          <n-data-table
+            :columns="highFrequencyTableColumns"
+            :data="highFrequencyTableData"
+            :pagination="false"
+            :scroll-x="highFrequencyTableScrollX"
+            size="small"
+            bordered
+            striped
+            max-height="300"
+            virtual-scroll
+          />
+        </div>
+      </div>
+      
+      <template #action>
+        <n-button @click="closeHighFrequencyModal">关闭</n-button>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, h, nextTick, watch, onMounted } from 'vue'
-import { NButton, NTooltip, NInputNumber, NSwitch, useNotification } from 'naive-ui'
+import { ref, reactive, computed, h, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { NButton, NTooltip, NInputNumber, NSwitch, useNotification, NDataTable } from 'naive-ui'
 import axios from 'axios'
 import * as XLSX from 'xlsx'
+import * as echarts from 'echarts'
 
 // Props
 const props = defineProps({
@@ -182,6 +235,7 @@ const selectedRowKeys = ref([])
 const supportedCoins = ref([])
 const inputValue = ref('')
 const soundEnabled = ref(true) // 提示音开关，默认开启
+const showAsPercent = ref(false) // 以百分比显示开关，默认关闭
 const CELL_WIDTH = 70
 
 // 通知实例
@@ -206,6 +260,14 @@ const quickOrderConfirmData = ref({
   positionSide: '',
   settings: null
 })
+
+// 高频请求模态框
+const showHighFrequencyModal = ref(false)
+const highFrequencyCoin = ref('')
+const highFrequencyData = ref([]) // 存储历史数据 [{timestamp, value, source}]
+const highFrequencyTimer = ref(null) // 定时器
+const chartRef = ref(null) // 图表DOM引用
+const chartInstance = ref(null) // echarts实例
 
 // 从历史数据回填滑动窗口
 function fillSlidingWindowFromHistory(coin, row) {
@@ -742,6 +804,31 @@ function formatWithSeparators(amount) {
   return n.toLocaleString('en-US')
 }
 
+// 计算相对于基准值的百分比
+function calculatePercentFromBaseline(row, rawValue) {
+  if (!row._firstCapture || !row._firstCapture.baseline) {
+    return null
+  }
+  const baseline = typeof row._firstCapture.baseline === 'number' && isFinite(row._firstCapture.baseline)
+    ? row._firstCapture.baseline
+    : parseDisplayToNumber(row._firstCapture.value)
+  
+  if (!isFinite(baseline) || baseline === 0 || !isFinite(rawValue) || rawValue === 0) {
+    return null
+  }
+  
+  return ((rawValue - baseline) / baseline) * 100
+}
+
+// 格式化百分比显示
+function formatPercentDisplay(percent) {
+  if (percent === null || percent === undefined || !isFinite(percent)) {
+    return '--'
+  }
+  const sign = percent >= 0 ? '+' : ''
+  return `${sign}${percent.toFixed(2)}%`
+}
+
 // 获取单元格背景色
 function getCellColor(row, timestamp, isNewData = false) {
   const currentValue = row._rawByTime && row._rawByTime[timestamp]
@@ -980,13 +1067,26 @@ async function rebuildColumnsWithTimeData() {
           : null
         
         const changePercentElement = pct !== null ? (() => {
-          const color = pct >= 0 ? '#16a34a' : '#dc2626'
-          return h('span', { style: { color, fontWeight: 'bold' } }, `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`)
-        })() : h('span', { style: { color: '#6b7280' } }, '--')
+          const abs = Math.abs(pct)
+          const zeroish = abs < 0.0001
+          const color = zeroish ? '#000' : (pct > 0 ? '#16a34a' : '#dc2626')
+          const text = `${zeroish ? '0.0' : pct.toFixed(1)}%`
+          return h('span', { 
+            style: `margin-left: 8px; color: ${color}; font-size: 12px; white-space: nowrap; line-height: 1.2;` 
+          }, text)
+        })() : null
         
-        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, [
-          h('span', { style: { fontWeight: 'bold' } }, row.coin),
-          changePercentElement
+        const firstCaptureElement = row._firstCapture ? h('div', { class: 'first-label' }, [
+          h('div', null, row._firstCapture.time),
+          h('div', null, row._firstCapture.value)
+        ]) : null
+        
+        return h('div', { class: 'coin-cell' }, [
+          h('div', { class: 'coin-name-line' }, [
+            h('span', { class: 'coin-name' }, row.coin),
+            changePercentElement
+          ]),
+          firstCaptureElement
         ])
       }
     }
@@ -1002,15 +1102,26 @@ async function rebuildColumnsWithTimeData() {
         const cellStyle = getCellColor(row, time, false) // 历史数据，不触发警告
         
         // 确保显示值不为 undefined
-        const displayValue = row[time] !== undefined ? row[time] : '0'
         const rawValue = row._rawByTime && row._rawByTime[time] !== undefined ? row._rawByTime[time] : 0
+        
+        // 根据开关决定显示格式
+        let displayValue
+        let tooltipValue
+        if (showAsPercent.value) {
+          const percent = calculatePercentFromBaseline(row, rawValue)
+          displayValue = formatPercentDisplay(percent)
+          tooltipValue = formatWithSeparators(rawValue)
+        } else {
+          displayValue = row[time] !== undefined ? row[time] : '0'
+          tooltipValue = formatWithSeparators(rawValue)
+        }
         
         return h(
           NTooltip,
           { placement: 'top' },
           {
             trigger: () => h('span', { style: cellStyle }, displayValue),
-            default: () => formatWithSeparators(rawValue)
+            default: () => tooltipValue
           }
         )
       }
@@ -1147,15 +1258,26 @@ async function restoreHistoricalData() {
         const cellStyle = getCellColor(row, time, false) // 历史数据，不触发警告
         
         // 确保显示值不为 undefined
-        const displayValue = row[time] !== undefined ? row[time] : '0'
         const rawValue = row._rawByTime && row._rawByTime[time] !== undefined ? row._rawByTime[time] : 0
+        
+        // 根据开关决定显示格式
+        let displayValue
+        let tooltipValue
+        if (showAsPercent.value) {
+          const percent = calculatePercentFromBaseline(row, rawValue)
+          displayValue = formatPercentDisplay(percent)
+          tooltipValue = formatWithSeparators(rawValue)
+        } else {
+          displayValue = row[time] !== undefined ? row[time] : '0'
+          tooltipValue = formatWithSeparators(rawValue)
+        }
         
         return h(
           NTooltip,
           { placement: 'top' },
           {
             trigger: () => h('span', { style: cellStyle }, displayValue),
-            default: () => formatWithSeparators(rawValue)
+            default: () => tooltipValue
           }
         )
       }
@@ -1348,15 +1470,26 @@ async function refreshTable() {
           const cellStyle = getCellColor(row, timestamp, isReallyNewData)
           
           // 确保显示值不为 undefined
-          const displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
           const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
+          
+          // 根据开关决定显示格式
+          let displayValue
+          let tooltipValue
+          if (showAsPercent.value) {
+            const percent = calculatePercentFromBaseline(row, rawValue)
+            displayValue = formatPercentDisplay(percent)
+            tooltipValue = formatWithSeparators(rawValue)
+          } else {
+            displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
+            tooltipValue = formatWithSeparators(rawValue)
+          }
           
           return h(
             NTooltip,
             { placement: 'top' },
             {
               trigger: () => h('span', { style: cellStyle }, displayValue),
-              default: () => formatWithSeparators(rawValue)
+              default: () => tooltipValue
             }
           )
         }
@@ -1910,12 +2043,344 @@ const thresholdsColumn = {
   }
 }
 
+// 请求高频数据
+async function fetchHighFrequencyData(coin) {
+  try {
+    const endpoint = `${import.meta.env.VITE_API_BASE}/realtime_coin_interest_info/${coin}`
+    const response = await axios.get(endpoint)
+    const data = response.data
+    
+    if (data && data.coin && data.timestamp && data.value !== undefined) {
+      // 添加到历史数据
+      highFrequencyData.value.push({
+        timestamp: data.timestamp,
+        value: data.value,
+        source: data.source || 'realtime_api'
+      })
+      
+      // 更新图表
+      updateChart()
+    }
+  } catch (error) {
+    console.error('请求高频数据失败:', error)
+  }
+}
+
+// 初始化图表
+function initChart() {
+  if (!chartRef.value) return
+  
+  // 销毁旧实例
+  if (chartInstance.value) {
+    chartInstance.value.dispose()
+  }
+  
+  // 创建新实例
+  chartInstance.value = echarts.init(chartRef.value)
+  
+  // 设置初始配置
+  const option = {
+    title: {
+      text: `${highFrequencyCoin.value} 资金量变化`,
+      left: 'center'
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!params || params.length === 0) return ''
+        const param = params[0]
+        const dataIndex = param.dataIndex
+        const dataItem = highFrequencyData.value[dataIndex]
+        
+        if (!dataItem) return ''
+        
+        const date = new Date(dataItem.timestamp)
+        const timeStr = date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        })
+        
+        return `
+          <div style="padding: 4px;">
+            <div><strong>时间:</strong> ${timeStr}</div>
+            <div><strong>${param.seriesName}:</strong> ${formatWithSeparators(dataItem.value)}</div>
+            <div><strong>数据源:</strong> ${dataItem.source || 'realtime_api'}</div>
+          </div>
+        `
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: [],
+      name: '时间'
+    },
+    yAxis: {
+      type: 'value',
+      name: '资金量',
+      scale: true // 不从0开始，根据数据范围自动调整
+    },
+    series: [{
+      name: '资金量',
+      type: 'line',
+      data: [],
+      smooth: true,
+      itemStyle: {
+        color: '#1890ff'
+      },
+      areaStyle: {
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 0,
+          y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(24, 144, 255, 0.3)' },
+            { offset: 1, color: 'rgba(24, 144, 255, 0.1)' }
+          ]
+        }
+      }
+    }],
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '3%',
+      containLabel: true
+    }
+  }
+  
+  chartInstance.value.setOption(option)
+}
+
+// 更新图表
+function updateChart() {
+  if (!chartInstance.value || highFrequencyData.value.length === 0) return
+  
+  const timestamps = highFrequencyData.value.map(item => {
+    // 格式化时间戳显示
+    const date = new Date(item.timestamp)
+    return date.toLocaleTimeString('zh-CN', { hour12: false })
+  })
+  const values = highFrequencyData.value.map(item => item.value)
+  
+  // 计算Y轴范围（不从0开始）
+  const minValue = Math.min(...values)
+  const maxValue = Math.max(...values)
+  const range = maxValue - minValue
+  const padding = range * 0.1 // 上下各留10%的padding
+  
+  const option = {
+    xAxis: {
+      data: timestamps
+    },
+    yAxis: {
+      min: minValue - padding,
+      max: maxValue + padding,
+      scale: true
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!params || params.length === 0) return ''
+        const param = params[0]
+        const dataIndex = param.dataIndex
+        const dataItem = highFrequencyData.value[dataIndex]
+        
+        if (!dataItem) return ''
+        
+        const date = new Date(dataItem.timestamp)
+        const timeStr = date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        })
+        
+        return `
+          <div style="padding: 4px;">
+            <div><strong>时间:</strong> ${timeStr}</div>
+            <div><strong>${param.seriesName}:</strong> ${formatWithSeparators(dataItem.value)}</div>
+            <div><strong>数据源:</strong> ${dataItem.source || 'realtime_api'}</div>
+          </div>
+        `
+      }
+    },
+    series: [{
+      data: values
+    }]
+  }
+  
+  chartInstance.value.setOption(option)
+  
+  // 自适应大小
+  chartInstance.value.resize()
+}
+
+// 打开高频请求模态框
+async function openHighFrequencyModal(coin) {
+  highFrequencyCoin.value = coin
+  highFrequencyData.value = []
+  showHighFrequencyModal.value = true
+  
+  // 立即请求一次
+  await fetchHighFrequencyData(coin)
+  
+  // 启动定时器，每10秒请求一次
+  if (highFrequencyTimer.value) {
+    clearInterval(highFrequencyTimer.value)
+  }
+  highFrequencyTimer.value = setInterval(() => {
+    fetchHighFrequencyData(coin)
+  }, 10000)
+}
+
+// 关闭高频请求模态框
+function closeHighFrequencyModal() {
+  // 清除定时器
+  if (highFrequencyTimer.value) {
+    clearInterval(highFrequencyTimer.value)
+    highFrequencyTimer.value = null
+  }
+  
+  // 销毁图表实例
+  if (chartInstance.value) {
+    chartInstance.value.dispose()
+    chartInstance.value = null
+  }
+  
+  showHighFrequencyModal.value = false
+  highFrequencyCoin.value = ''
+  highFrequencyData.value = []
+}
+
+// 获取资金量单元格的背景色
+function getHighFrequencyCellColor(dataIndex) {
+  // 第一列数据没有前一个数据，不设置颜色
+  if (dataIndex === 0 || highFrequencyData.value.length < 2) {
+    return ''
+  }
+  
+  const currentValue = highFrequencyData.value[dataIndex]?.value
+  const prevValue = highFrequencyData.value[dataIndex - 1]?.value
+  
+  if (!currentValue || !prevValue || prevValue === 0) {
+    return ''
+  }
+  
+  // 计算涨跌幅
+  const changePercent = ((currentValue - prevValue) / prevValue) * 100
+  
+  // 下跌量大于2%标红色
+  if (changePercent < -2) {
+    return 'background-color: #fecaca;' // 浅红色
+  }
+  // 下跌标黄色
+  else if (changePercent < 0) {
+    return 'background-color: #fef3c7;' // 浅黄色
+  }
+  // 上涨标绿色
+  else if (changePercent > 0) {
+    return 'background-color: #dcfce7;' // 浅绿色
+  }
+  
+  return ''
+}
+
+// 高频请求表格列定义（动态列）
+const highFrequencyTableColumns = computed(() => {
+  const columns = [
+    {
+      title: '字段',
+      key: 'field',
+      fixed: 'left',
+      width: 120
+    }
+  ]
+  
+  // 动态添加数据列（每请求一次多一列）
+  highFrequencyData.value.forEach((item, index) => {
+    const date = new Date(item.timestamp)
+    const timeLabel = date.toLocaleTimeString('zh-CN', { hour12: false })
+    
+    columns.push({
+      title: timeLabel,
+      key: `col_${index}`,
+      width: 150,
+      render: (row) => {
+        const cellValue = row[`col_${index}`] || '--'
+        
+        // 资金量行需要根据涨跌设置颜色，并添加tooltip显示原始数字
+        if (row.field === '资金量') {
+          const cellStyle = getHighFrequencyCellColor(index)
+          const rawValue = highFrequencyData.value[index]?.value
+          const tooltipText = rawValue ? formatWithSeparators(rawValue) : ''
+          
+          return h(
+            NTooltip,
+            { placement: 'top' },
+            {
+              trigger: () => h('span', { style: cellStyle }, cellValue),
+              default: () => tooltipText || cellValue
+            }
+          )
+        }
+        
+        // 其他行正常显示
+        return cellValue
+      }
+    })
+  })
+  
+  return columns
+})
+
+// 高频请求表格横向滚动宽度
+const highFrequencyTableScrollX = computed(() => {
+  // 固定列宽度 + 动态列宽度
+  const fixedWidth = 120
+  const dynamicWidth = highFrequencyData.value.length * 150
+  return Math.max(fixedWidth + dynamicWidth, 600)
+})
+
+// 高频请求表格数据（移除日期行）
+const highFrequencyTableData = computed(() => {
+  if (highFrequencyData.value.length === 0) {
+    return []
+  }
+  
+  // 表格结构：每行代表一个字段（数据源、值），每列代表一次请求，不包含时间行
+  const rows = [
+    {
+      field: '数据源',
+      ...highFrequencyData.value.reduce((acc, item, index) => {
+        acc[`col_${index}`] = item.source || 'realtime_api'
+        return acc
+      }, {})
+    },
+    {
+      field: '资金量',
+      ...highFrequencyData.value.reduce((acc, item, index) => {
+        acc[`col_${index}`] = formatDisplayNumber(item.value)
+        return acc
+      }, {})
+    }
+  ]
+  
+  return rows
+})
+
 // 操作列定义
 const actionColumn = {
   title: '操作',
   key: 'actions',
   fixed: 'right',
-  width: CELL_WIDTH * 3, // 增加宽度以容纳更多按钮
+  width: CELL_WIDTH * 5.5, // 增加宽度以容纳更多按钮，避免换行
   render: (row) => {
     // user 模式：不显示任何操作按钮
     if (localStorage.getItem('currentUser') !== '') {
@@ -1939,7 +2404,7 @@ const actionColumn = {
     }
     
     return h('div', { 
-      style: 'display: flex; gap: 4px; align-items: center;' 
+      style: 'display: flex; gap: 4px; align-items: center; flex-wrap: wrap;' 
     }, [
       h(
         NButton,
@@ -1958,6 +2423,15 @@ const actionColumn = {
           onClick: () => quickOpenShort(row.coin)
         },
         { default: () => '快速开空' }
+      ),
+      h(
+        NButton,
+        {
+          size: 'small',
+          type: 'info',
+          onClick: () => openHighFrequencyModal(row.coin)
+        },
+        { default: () => '高频请求' }
       ),
       h(
         NButton,
@@ -2249,6 +2723,55 @@ defineExpose({
   getTableData,
   deleteCoin,
   scrollToRightMost
+})
+
+// 监听百分比显示开关变化，重新构建列定义
+watch(showAsPercent, async () => {
+  if (tableData.length > 0 && timeColumns.value.length > 0) {
+    // 使用 nextTick 确保数据已经更新
+    await nextTick()
+    await rebuildColumnsWithTimeData()
+  }
+})
+
+// 监听高频请求模态框显示状态，确保图表正确渲染
+watch(showHighFrequencyModal, async (newVal) => {
+  if (newVal) {
+    // 模态框打开时，等待DOM更新后初始化图表
+    await nextTick()
+    setTimeout(() => {
+      initChart()
+      // 如果已有数据，立即更新图表
+      if (highFrequencyData.value.length > 0) {
+        updateChart()
+      }
+    }, 100)
+  } else {
+    // 模态框关闭时，清除定时器和图表
+    if (highFrequencyTimer.value) {
+      clearInterval(highFrequencyTimer.value)
+      highFrequencyTimer.value = null
+    }
+    if (chartInstance.value) {
+      chartInstance.value.dispose()
+      chartInstance.value = null
+    }
+  }
+})
+
+// 组件卸载时清理
+onUnmounted(() => {
+  // 清除高频请求定时器
+  if (highFrequencyTimer.value) {
+    clearInterval(highFrequencyTimer.value)
+    highFrequencyTimer.value = null
+  }
+  
+  // 销毁图表实例
+  if (chartInstance.value) {
+    chartInstance.value.dispose()
+    chartInstance.value = null
+  }
 })
 
 // 初始化
