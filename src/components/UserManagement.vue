@@ -211,105 +211,200 @@
             <!-- 挂单情况 Tab -->
             <n-tab-pane name="orders" tab="挂单情况">
               <div class="tab-content">
-                <div class="orders-header">
-                  <h4>当前挂单</h4>
-                  <div class="header-actions">
-                    <n-button 
-                      size="small" 
-                      type="primary" 
-                      :loading="ordersLoading"
-                      @click="refreshOrders"
-                    >
-                      刷新挂单
-                    </n-button>
-                    <n-button 
-                      size="small" 
-                      type="error" 
-                      @click="cancelAllOrders(user)"
-                      class="cancel-all-btn"
-                    >
-                      撤销全部
-                    </n-button>
-                  </div>
-                </div>
-                
-                <div class="orders-list">
-                  <div v-if="user.orders && user.orders.length > 0">
-                    <div 
-                      v-for="order in user.orders" 
-                      :key="order.id"
-                      class="order-item"
-                    >
-                      <div class="order-header">
-                        <div class="order-type-badge">
-                          <span class="order-type" :class="getOrderTypeClass(order.type)">{{ getOrderTypeText(order.type) }}</span>
-                          <span v-if="order.reduceOnly" class="reduce-only-flag">只减仓</span>
-                        </div>
-                        <div class="order-time">{{ formatOrderTime(order.time) }}</div>
-                      </div>
-                      
-                      <div class="order-content">
-                        <div class="order-main-info">
-                          <div class="symbol-side">
-                            <span class="coin-name">{{ order.symbol }}</span>
-                            <span class="order-side" :class="order.side.toLowerCase()">
-                              {{ order.side === 'BUY' ? '买入' : '卖出' }}
-                            </span>
-                          </div>
-                          
-                          <div class="trigger-price">
-                            <span class="price-label">触发价格:</span>
-                            <span class="price-value">
-                              {{ order.side === 'BUY' ? '≥' : '≤' }}${{ getTriggerPrice(order).toFixed(6) }}
-                            </span>
-                          </div>
-                          
-                          <div class="quantity-info">
-                            <div class="quantity-item">
-                              <span class="qty-label">数量:</span>
-                              <span class="qty-value">{{ order.origQty.toFixed(6) }} {{ order.symbol.replace('USDT', '') }}</span>
-                            </div>
-                            <div class="quantity-item">
-                              <span class="qty-label">USDT:</span>
-                              <span class="qty-value">${{ (order.origQty * getTriggerPrice(order)).toFixed(2) }}</span>
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <!-- <div class="order-status">
-                          <span class="status-badge" :class="order.status.toLowerCase()">
-                            {{ getOrderStatusText(order.status) }}
-                          </span>
-                        </div> -->
-                        
-                        <!-- 撤单按钮 - 右下角 -->
-                        <div class="order-actions">
-                          <n-button 
-                            size="small" 
-                            type="error" 
-                            :disabled="order.status !== 'NEW'"
-                            @click="cancelOrder(order)"
-                            class="cancel-order-btn"
-                          >
-                            撤单
-                          </n-button>
-                          <n-button 
-                            size="small" 
-                            type="warning" 
-                            :disabled="order.status !== 'NEW'"
-                            @click="batchCancelOrder(order)"
-                            class="batch-cancel-btn"
-                          >
-                            批量撤单
-                          </n-button>
-                        </div>
+                <!-- 订单类型切换Tab -->
+                <n-tabs v-model:value="orderTabType" type="segment" style="margin-bottom: 16px;">
+                  <n-tab-pane name="basic" tab="基础单">
+                    <div class="orders-header">
+                      <h4>当前挂单（基础单）</h4>
+                      <div class="header-actions">
+                        <n-button 
+                          size="small" 
+                          type="primary" 
+                          :loading="ordersLoading"
+                          @click="refreshOrders"
+                        >
+                          刷新挂单
+                        </n-button>
+                        <n-button 
+                          size="small" 
+                          type="error" 
+                          @click="cancelAllOrders(user)"
+                          class="cancel-all-btn"
+                        >
+                          撤销全部
+                        </n-button>
                       </div>
                     </div>
-                  </div>
-                  <div v-else class="empty-state">
-                    <n-empty description="暂无挂单数据" />
-                  </div>
-                </div>
+                    
+                    <div class="orders-list">
+                      <div v-if="user.orders && user.orders.length > 0">
+                        <div 
+                          v-for="order in user.orders" 
+                          :key="order.id"
+                          class="order-item"
+                        >
+                          <div class="order-header">
+                            <div class="order-type-badge">
+                              <span class="order-type" :class="getOrderTypeClass(order.type)">{{ getOrderTypeText(order.type) }}</span>
+                              <span v-if="order.reduceOnly" class="reduce-only-flag">只减仓</span>
+                            </div>
+                            <div class="order-time">{{ formatOrderTime(order.time) }}</div>
+                          </div>
+                          
+                          <div class="order-content">
+                            <div class="order-main-info">
+                              <div class="symbol-side">
+                                <span class="coin-name">{{ order.symbol }}</span>
+                                <span class="order-side" :class="order.side.toLowerCase()">
+                                  {{ order.side === 'BUY' ? '买入' : '卖出' }}
+                                </span>
+                              </div>
+                              
+                              <div class="trigger-price">
+                                <span class="price-label">触发价格:</span>
+                                <span class="price-value">
+                                  {{ order.side === 'BUY' ? '≥' : '≤' }}${{ getTriggerPrice(order).toFixed(6) }}
+                                </span>
+                              </div>
+                              
+                              <div class="quantity-info">
+                                <div class="quantity-item">
+                                  <span class="qty-label">数量:</span>
+                                  <span class="qty-value">{{ order.origQty.toFixed(6) }} {{ order.symbol.replace('USDT', '') }}</span>
+                                </div>
+                                <div class="quantity-item">
+                                  <span class="qty-label">USDT:</span>
+                                  <span class="qty-value">${{ (order.origQty * getTriggerPrice(order)).toFixed(2) }}</span>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <!-- 撤单按钮 - 右下角 -->
+                            <div class="order-actions">
+                              <n-button 
+                                size="small" 
+                                type="error" 
+                                :disabled="order.status !== 'NEW'"
+                                @click="cancelOrder(order)"
+                                class="cancel-order-btn"
+                              >
+                                撤单
+                              </n-button>
+                              <n-button 
+                                size="small" 
+                                type="warning" 
+                                :disabled="order.status !== 'NEW'"
+                                @click="batchCancelOrder(order)"
+                                class="batch-cancel-btn"
+                              >
+                                批量撤单
+                              </n-button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="empty-state">
+                        <n-empty description="暂无基础单数据" />
+                      </div>
+                    </div>
+                  </n-tab-pane>
+                  
+                  <n-tab-pane name="algo" tab="条件单">
+                    <div class="orders-header">
+                      <h4>当前挂单（条件单）</h4>
+                      <div class="header-actions">
+                        <n-button 
+                          size="small" 
+                          type="primary" 
+                          :loading="algoOrdersLoading"
+                          @click="refreshAlgoOrders"
+                        >
+                          刷新条件单
+                        </n-button>
+                      </div>
+                    </div>
+                    
+                    <div class="orders-list">
+                      <div v-if="user.algoOrders && user.algoOrders.length > 0">
+                        <div 
+                          v-for="order in user.algoOrders" 
+                          :key="order.algoId"
+                          class="order-item"
+                        >
+                          <div class="order-header">
+                            <div class="order-type-badge">
+                              <span class="order-type" :class="getAlgoOrderTypeClass(order.orderType || order.type)">
+                                {{ getAlgoOrderTypeText(order.orderType || order.type) }}
+                              </span>
+                              <span v-if="order.closePosition" class="reduce-only-flag">平仓</span>
+                              <span v-if="order.reduceOnly" class="reduce-only-flag">仅减仓</span>
+                            </div>
+                            <div class="order-time">{{ formatOrderTime(order.createTime) }}</div>
+                          </div>
+                          
+                          <div class="order-content">
+                            <div class="order-main-info">
+                              <div class="symbol-side">
+                                <span class="coin-name">{{ order.symbol }}</span>
+                                <span class="order-side" :class="order.side.toLowerCase()">
+                                  {{ order.side === 'BUY' ? '买入' : '卖出' }}
+                                </span>
+                              </div>
+                              
+                              <div class="trigger-price">
+                                <span class="price-label">触发价格:</span>
+                                <span class="price-value">${{ parseFloat(order.triggerPrice || 0).toFixed(6) }}</span>
+                              </div>
+                              
+                              <div v-if="order.price" class="trigger-price">
+                                <span class="price-label">委托价格:</span>
+                                <span class="price-value">${{ parseFloat(order.price).toFixed(6) }}</span>
+                              </div>
+                              
+                              <div class="quantity-info">
+                                <div class="quantity-item">
+                                  <span class="qty-label">数量:</span>
+                                  <span class="qty-value">{{ parseFloat(order.quantity || 0).toFixed(6) }} {{ order.symbol.replace('USDT', '') }}</span>
+                                </div>
+                                <div class="quantity-item">
+                                  <span class="qty-label">触发类型:</span>
+                                  <span class="qty-value">{{ getWorkingTypeText(order.workingType) }}</span>
+                                </div>
+                              </div>
+                              
+                              <div class="quantity-info">
+                                <div class="quantity-item">
+                                  <span class="qty-label">持仓方向:</span>
+                                  <span class="qty-value">{{ order.positionSide || '--' }}</span>
+                                </div>
+                                <div class="quantity-item">
+                                  <span class="qty-label">订单有效方式:</span>
+                                  <span class="qty-value">{{ getTimeInForceText(order.timeInForce) }}</span>
+                                </div>
+                              </div>
+                              
+                              <div class="quantity-info">
+                                <div class="quantity-item">
+                                  <span class="qty-label">状态:</span>
+                                  <span class="status-badge" :class="order.status.toLowerCase()">
+                                    {{ getAlgoOrderStatusText(order.status) }}
+                                  </span>
+                                </div>
+                                <div v-if="order.clientAlgoId" class="quantity-item">
+                                  <span class="qty-label">客户端ID:</span>
+                                  <span class="qty-value">{{ order.clientAlgoId }}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="empty-state">
+                        <n-empty description="暂无条件单数据" />
+                      </div>
+                    </div>
+                  </n-tab-pane>
+                </n-tabs>
               </div>
             </n-tab-pane>
           </n-tabs>
@@ -1045,6 +1140,8 @@ const users = ref([])
 const loading = ref(false)
 const positionsLoading = ref(false)
 const ordersLoading = ref(false)
+const algoOrdersLoading = ref(false) // 条件单加载状态
+const orderTabType = ref('basic') // 'basic' 或 'algo'
 const autoRefresh = ref(true)
 const refreshInterval = ref(null)
 const refreshRate = ref(3000) // 3秒刷新一次
@@ -1174,7 +1271,8 @@ async function fetchUsers() {
         useTestnet: user.use_testnet,
         status: user.is_active ? 'online' : 'offline',
         positions: [], // 初始化为空，后续可以单独加载
-        orders: [] // 初始化为空，后续可以单独加载
+        orders: [], // 初始化为空，后续可以单独加载
+        algoOrders: [] // 条件单数据
       }))
       
       console.log('处理后的用户数据:', users.value)
@@ -1558,6 +1656,155 @@ async function fetchAllOrders() {
   } finally {
     ordersLoading.value = false
   }
+}
+
+// 获取所有用户的条件单数据
+async function fetchAllAlgoOrders() {
+  try {
+    algoOrdersLoading.value = true
+    console.log('开始获取所有用户条件单数据...')
+    
+    const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/all`)
+    console.log('条件单数据响应:', response.data)
+    
+    if (response.data && response.data.success && response.data.data) {
+      const algoOrdersData = response.data.data
+      
+      // 按用户分组条件单数据
+      const ordersByUser = {}
+      
+      // 如果返回格式是 { users: [...] }，每个用户有自己的条件单列表
+      if (algoOrdersData.users && Array.isArray(algoOrdersData.users)) {
+        algoOrdersData.users.forEach(userData => {
+          if (userData.alias && userData.algoOrders) {
+            ordersByUser[userData.alias] = userData.algoOrders
+          } else if (userData.alias && Array.isArray(userData.orders)) {
+            // 兼容 orders 字段
+            ordersByUser[userData.alias] = userData.orders.filter(o => o.type_label === 'algo_order')
+          }
+        })
+      } 
+      // 如果返回的是数组，需要按用户分组
+      else if (Array.isArray(algoOrdersData)) {
+        algoOrdersData.forEach(order => {
+          // 尝试从订单中找到用户标识
+          const userAlias = order.userAlias || order.alias || order.user?.alias
+          if (userAlias) {
+            if (!ordersByUser[userAlias]) {
+              ordersByUser[userAlias] = []
+            }
+            ordersByUser[userAlias].push(order)
+          }
+        })
+      } 
+      // 如果返回格式是 { orders: [...] }
+      else if (algoOrdersData.orders && Array.isArray(algoOrdersData.orders)) {
+        algoOrdersData.orders.forEach(order => {
+          const userAlias = order.userAlias || order.alias || order.user?.alias
+          if (userAlias) {
+            if (!ordersByUser[userAlias]) {
+              ordersByUser[userAlias] = []
+            }
+            ordersByUser[userAlias].push(order)
+          }
+        })
+      }
+      
+      // 更新每个用户的条件单数据
+      users.value.forEach(user => {
+        const userOrders = ordersByUser[user.alias] || []
+        user.algoOrders = userOrders.map(order => ({
+          algoId: String(order.algoId || order.id || ''),
+          clientAlgoId: order.clientAlgoId || '',
+          symbol: order.symbol || '',
+          side: order.side || '',
+          orderType: order.orderType || order.type || '', // 优先使用 orderType
+          type: order.type || order.orderType || '', // 兼容字段
+          positionSide: order.positionSide || '',
+          reduceOnly: order.reduceOnly || false,
+          triggerPrice: order.triggerPrice || 0,
+          price: order.price || null,
+          quantity: order.quantity || 0,
+          closePosition: order.closePosition || false,
+          workingType: order.workingType || '',
+          timeInForce: order.timeInForce || '',
+          status: order.status || '',
+          createTime: order.createTime || order.time || '',
+          updateTime: order.updateTime || '',
+          type_label: order.type_label || 'algo_order'
+        }))
+      })
+    }
+  } catch (error) {
+    console.error('获取条件单数据失败:', error)
+  } finally {
+    algoOrdersLoading.value = false
+  }
+}
+
+// 刷新条件单
+async function refreshAlgoOrders() {
+  await fetchAllAlgoOrders()
+}
+
+// 获取条件单类型文本
+function getAlgoOrderTypeText(type) {
+  const typeMap = {
+    'TAKE_PROFIT_MARKET': '止盈市价',
+    'STOP_MARKET': '止损市价',
+    'TAKE_PROFIT': '止盈限价',
+    'STOP': '止损限价',
+    'STOP_LOSS_LIMIT': '止损限价',
+    'TAKE_PROFIT_LIMIT': '止盈限价'
+  }
+  return typeMap[type] || type || '未知类型'
+}
+
+// 获取条件单类型CSS类
+function getAlgoOrderTypeClass(type) {
+  const classMap = {
+    'TAKE_PROFIT_MARKET': 'take-profit-market',
+    'STOP_MARKET': 'stop-market',
+    'TAKE_PROFIT': 'take-profit-limit',
+    'STOP': 'stop-loss-limit',
+    'STOP_LOSS_LIMIT': 'stop-loss-limit',
+    'TAKE_PROFIT_LIMIT': 'take-profit-limit'
+  }
+  return classMap[type] || 'default'
+}
+
+// 获取条件单状态文本
+function getAlgoOrderStatusText(status) {
+  const statusMap = {
+    'PENDING': '待触发',
+    'TRIGGERED': '已触发',
+    'CANCELLED': '已取消',
+    'REJECTED': '已拒绝',
+    'EXPIRED': '已过期'
+  }
+  return statusMap[status] || status || '未知状态'
+}
+
+// 获取触发类型文本
+function getWorkingTypeText(workingType) {
+  const typeMap = {
+    'MARK_PRICE': '标记价格',
+    'CONTRACT_PRICE': '合约价格',
+    'INDEX_PRICE': '指数价格'
+  }
+  return typeMap[workingType] || workingType || '未知'
+}
+
+// 获取订单有效方式文本
+function getTimeInForceText(timeInForce) {
+  const typeMap = {
+    'GTC': '成交为止',
+    'IOC': '立即成交或取消',
+    'FOK': '全部成交或取消',
+    'GTX': '只做Maker',
+    'GTD': '指定日期前有效'
+  }
+  return typeMap[timeInForce] || timeInForce || '--'
 }
 
 // WebSocket连接管理
@@ -1957,6 +2204,17 @@ async function refreshOrders() {
   console.log('📋 刷新挂单数据...')
   await fetchAllOrders()
 }
+
+// 监听订单类型tab切换，自动刷新对应数据
+watch(orderTabType, (newVal) => {
+  if (newVal === 'algo') {
+    // 切换到条件单时，如果没有数据则获取
+    const hasAlgoOrders = users.value.some(u => u.algoOrders && u.algoOrders.length > 0)
+    if (!hasAlgoOrders) {
+      fetchAllAlgoOrders()
+    }
+  }
+})
 
 // 批量撤单功能
 function batchCancelOrder(order) {
@@ -2659,6 +2917,10 @@ onMounted(async () => {
   // 获取用户数据后，自动获取仓位和挂单数据
   await fetchAllPositions()
   await fetchAllOrders()
+  // 如果当前在条件单tab，也获取条件单数据
+  if (orderTabType.value === 'algo') {
+    await fetchAllAlgoOrders()
+  }
   // 开始自动刷新
   startAutoRefresh()
 })
