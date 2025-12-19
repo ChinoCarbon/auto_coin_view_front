@@ -75,8 +75,12 @@
          跌破阈值
        </span>
        <span class="legend-item">
-         <span class="color-box" style="background-color: #fce7f3;"></span>
-         MACD下跌且动能减弱
+         <span class="color-dot" style="width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; display: inline-block;"></span>
+         MACD金叉
+       </span>
+       <span class="legend-item">
+         <span class="color-dot" style="width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; display: inline-block;"></span>
+         MACD下跌减弱
        </span>
      </div>
     <div class="table-wrapper" ref="tableWrapperRef">
@@ -1400,25 +1404,35 @@ function checkMACDDownAndWeakening(coin, timestamp) {
 }
 
 // 检查MACD是否金叉（MACD线上穿信号线）
-function checkMACDGoldenCross(coin, timestamp) {
+// 注意：只在K线收线后判断，未收线的K线不判断
+function checkMACDGoldenCross(coin, timestamp, isLatestTimestamp = false) {
   if (!macdDataCache.value.has(coin)) {
     return false
   }
   
   const coinCache = macdDataCache.value.get(coin)
-  const macdData = coinCache.get(timestamp)
   
-  if (!macdData || macdData.macd === null || macdData.macd === undefined || 
-      macdData.signal === null || macdData.signal === undefined) {
-    return false
-  }
-  
-  // 获取前一个时间戳的MACD数据
+  // 获取当前时间戳在时间列中的索引
   const currentIndex = timeColumns.value.indexOf(timestamp)
   if (currentIndex <= 0) {
     return false
   }
   
+  // 如果是最新时间戳，需要确保MACD数据存在（确保K线已收线）
+  // WebSocket只在K线收线时（x: true）才计算MACD，所以如果没有MACD数据，说明K线还未收线
+  const macdData = coinCache.get(timestamp)
+  if (!macdData || macdData.macd === null || macdData.macd === undefined || 
+      macdData.signal === null || macdData.signal === undefined) {
+    // 如果是最新时间戳且没有MACD数据，说明K线还未收线，不判断金叉
+    if (isLatestTimestamp) {
+      console.log(`[MACD金叉] ${coin}@${timestamp} 跳过判断：最新时间戳但K线未收线（无MACD数据）`)
+      return false
+    }
+    // 如果不是最新时间戳但没有MACD数据，也返回false
+    return false
+  }
+  
+  // 获取前一个时间戳的MACD数据
   const prevTimestamp = timeColumns.value[currentIndex - 1]
   const prevMacdData = coinCache.get(prevTimestamp)
   
@@ -1434,6 +1448,7 @@ function checkMACDGoldenCross(coin, timestamp) {
   
   if (isGoldenCross) {
     console.log(`[MACD金叉] ${coin}@${timestamp}:`, {
+      isLatestTimestamp,
       prevMacd: prevMacdData.macd?.toFixed(6),
       prevSignal: prevMacdData.signal?.toFixed(6),
       currentMacd: macdData.macd?.toFixed(6),
@@ -1738,15 +1753,19 @@ async function rebuildColumnsWithTimeData() {
         }
         
         // 检查MACD金叉和减弱（金叉优先）
-        const isGoldenCross = checkMACDGoldenCross(row.coin, time)
+        // 如果是最新时间戳，需要特别处理（可能K线未收线）
+        const isLatestTimestamp = row._latestTimestamp === time
+        const isGoldenCross = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
         const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
         
         // 构建显示内容
         const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
           h('span', { style: cellStyle }, displayValue),
-          (isGoldenCross || isWeakening) ? h('span', {
-            style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
-          }, isGoldenCross ? '金叉' : '减弱') : null
+          isGoldenCross ? h('div', {
+            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+          }) : isWeakening ? h('div', {
+            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+          }) : null
         ])
         
         return h(
@@ -1906,15 +1925,19 @@ async function restoreHistoricalData() {
         }
         
         // 检查MACD金叉和减弱（金叉优先）
-        const isGoldenCross = checkMACDGoldenCross(row.coin, time)
+        // 如果是最新时间戳，需要特别处理（可能K线未收线）
+        const isLatestTimestamp = row._latestTimestamp === time
+        const isGoldenCross = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
         const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
         
         // 构建显示内容
         const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
           h('span', { style: cellStyle }, displayValue),
-          (isGoldenCross || isWeakening) ? h('span', {
-            style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
-          }, isGoldenCross ? '金叉' : '减弱') : null
+          isGoldenCross ? h('div', {
+            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+          }) : isWeakening ? h('div', {
+            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+          }) : null
         ])
         
         return h(
@@ -2210,15 +2233,19 @@ async function refreshTable() {
             }
             
             // 检查MACD金叉和减弱（金叉优先）
-            const isGoldenCross = checkMACDGoldenCross(row.coin, timestamp)
+            // 如果是最新时间戳，需要特别处理（可能K线未收线）
+            const isLatestTimestamp = row._latestTimestamp === timestamp
+            const isGoldenCross = checkMACDGoldenCross(row.coin, timestamp, isLatestTimestamp)
             const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, timestamp)
             
             // 构建显示内容
             const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
               h('span', { style: cellStyle }, displayValue),
-              (isGoldenCross || isWeakening) ? h('span', {
-                style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
-              }, isGoldenCross ? '金叉' : '减弱') : null
+              isGoldenCross ? h('div', {
+                style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+              }) : isWeakening ? h('div', {
+                style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+              }) : null
             ])
             
             return h(
