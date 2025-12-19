@@ -74,6 +74,10 @@
          <span class="color-box" style="background-color: #fecaca;"></span>
          跌破阈值
        </span>
+       <span class="legend-item">
+         <span class="color-box" style="background-color: #fce7f3;"></span>
+         MACD下跌且动能减弱
+       </span>
      </div>
     <div class="table-wrapper" ref="tableWrapperRef">
       <n-data-table 
@@ -249,6 +253,401 @@ const slidingWindows = ref(new Map()) // key: coin, value: { data: [{timestamp, 
 
 // 滑动窗口提示冷却期（每个币种最后一次提示的时间戳）
 const slidingWindowCooldown = ref(new Map()) // key: coin, value: { lastAlertTimestamp: timestamp, cooldownCount: 0 }
+
+// MACD数据缓存（每个币种和时间戳）
+const macdDataCache = ref(new Map()) // key: coin, value: Map<timestamp, { macd, signal, histogram }>
+
+// 币安WebSocket连接和K线数据
+let binanceWS = null
+const binanceKlineData = ref(new Map()) // key: symbol (如BTCUSDT), value: Array<{time, close}>
+const binanceWSSubscriptions = ref(new Set()) // 已订阅的交易对
+
+// 初始化币安WebSocket连接
+function initBinanceWebSocket() {
+  if (binanceWS && binanceWS.readyState === WebSocket.OPEN) {
+    return // 已经连接
+  }
+  
+  // 关闭旧连接
+  if (binanceWS) {
+    try {
+      binanceWS.close()
+    } catch (e) {}
+  }
+  
+  // 获取所有需要订阅的币种
+  const symbols = new Set()
+  internalCoins.value.forEach(coin => {
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    symbols.add(symbol.toLowerCase())
+  })
+  
+  if (symbols.size === 0) {
+    return
+  }
+  
+  // 构建订阅流：btcusdt@kline_1m/ethusdt@kline_1m
+  const streams = Array.from(symbols).map(s => `${s}@kline_1m`).join('/')
+  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+  
+  console.log('初始化币安WebSocket连接，订阅K线数据:', Array.from(symbols))
+  
+  binanceWS = new WebSocket(wsUrl)
+  
+  binanceWS.onopen = () => {
+    console.log('✅ 币安WebSocket连接成功')
+  }
+  
+  binanceWS.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data)
+      
+      if (message.stream && message.data) {
+        const stream = message.stream // 如 "btcusdt@kline_1m"
+        const symbol = stream.split('@')[0].toUpperCase() // "BTCUSDT"
+        const klineData = message.data.k // K线数据
+        
+        if (klineData && klineData.x) { // x为true表示K线已完成
+          const closePrice = parseFloat(klineData.c) // 收盘价
+          const openTime = klineData.t // 开盘时间（毫秒时间戳）
+          
+          console.log(`[MACD] 收到${symbol}完成K线:`, {
+            time: new Date(openTime).toLocaleString('zh-CN'),
+            close: closePrice,
+            klineCount: binanceKlineData.value.get(symbol)?.length || 0
+          })
+          
+          if (!binanceKlineData.value.has(symbol)) {
+            binanceKlineData.value.set(symbol, [])
+          }
+          
+          const klines = binanceKlineData.value.get(symbol)
+          
+          // 检查是否已存在该时间点的K线
+          const existingIndex = klines.findIndex(k => k.time === openTime)
+          if (existingIndex !== -1) {
+            // 更新现有K线
+            klines[existingIndex].close = closePrice
+            console.log(`[MACD] 更新${symbol}已有K线，索引: ${existingIndex}`)
+          } else {
+            // 添加新K线
+            klines.push({
+              time: openTime,
+              close: closePrice
+            })
+            
+            // 保持最多50根K线
+            if (klines.length > 50) {
+              klines.shift()
+            }
+            
+            console.log(`[MACD] 添加${symbol}新K线，当前K线数量: ${klines.length}`)
+          }
+          
+          // 当有足够数据时，计算MACD
+          if (klines.length >= 34) {
+            const closes = klines.map(k => k.close)
+            const macdResult = calculateMACD(closes)
+            
+            if (macdResult) {
+              // 将币安时间戳转换为表格使用的时间格式
+              const timestamp = formatTimestampFromBinance(openTime)
+              
+              // 找到对应的币种（symbol可能是BTCUSDT，coin可能是BTC）
+              const coin = internalCoins.value.find(c => {
+                const coinSymbol = c.endsWith('USDT') ? c : `${c}USDT`
+                return coinSymbol === symbol
+              })
+              
+              if (coin) {
+                if (!macdDataCache.value.has(coin)) {
+                  macdDataCache.value.set(coin, new Map())
+                }
+                const coinCache = macdDataCache.value.get(coin)
+                coinCache.set(timestamp, macdResult)
+                
+                console.log(`[MACD] ${coin}(${symbol}) MACD计算完成:`, {
+                  timestamp,
+                  macd: macdResult.macd?.toFixed(6),
+                  signal: macdResult.signal?.toFixed(6),
+                  histogram: macdResult.histogram?.toFixed(6),
+                  isDown: macdResult.histogram < 0 || (macdResult.macd < (macdResult.signal || 0)),
+                  klineCount: klines.length
+                })
+              } else {
+                console.warn(`[MACD] 未找到${symbol}对应的币种`)
+              }
+            } else {
+              console.warn(`[MACD] ${symbol} MACD计算失败，K线数量: ${klines.length}`)
+            }
+          } else {
+            console.log(`[MACD] ${symbol} K线数据不足，当前: ${klines.length}/34`)
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[MACD] 处理币安WebSocket消息失败:', error)
+    }
+  }
+  
+  binanceWS.onerror = (error) => {
+    console.error('币安WebSocket错误:', error)
+  }
+  
+  binanceWS.onclose = () => {
+    console.log('币安WebSocket连接关闭')
+    // 5秒后重连
+    setTimeout(() => {
+      if (internalCoins.value.length > 0) {
+        initBinanceWebSocket()
+      }
+    }, 5000)
+  }
+}
+
+// 格式化币安时间戳为表格使用的时间格式
+function formatTimestampFromBinance(binanceTimestamp) {
+  // 币安时间戳是毫秒，需要转换为表格使用的时间格式
+  // 表格时间格式：前面有ASCII字母（如"K"），秒不一定是00（如"K14:23:45"）
+  // 注意：这里只用于MACD缓存，实际表格时间戳是从后端API返回的，格式可能不同
+  // 所以这个函数可能不需要，或者需要根据实际后端返回的格式来调整
+  const date = new Date(binanceTimestamp)
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+  // 返回格式：HH:mm:ss（不带字母前缀，因为MACD缓存应该使用实际的时间戳格式）
+  return `${hh}:${mm}:${ss}`
+}
+
+// 批量获取历史K线数据（逐个请求，避免并发过多）
+async function fetchHistoricalKlines() {
+  const coins = internalCoins.value
+  if (coins.length === 0) {
+    return
+  }
+  
+  console.log(`[MACD历史K线] 开始批量获取${coins.length}个币种的历史K线数据`)
+  
+  // 逐个请求，每个请求间隔100ms，避免并发过多
+  for (let i = 0; i < coins.length; i++) {
+    const coin = coins[i]
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    
+    try {
+      // 如果已经有足够的K线数据，跳过
+      const existingKlines = binanceKlineData.value.get(symbol)
+      if (existingKlines && existingKlines.length >= 50) {
+        console.log(`[MACD历史K线] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
+        continue
+      }
+      
+      // 通过后端代理获取币安历史K线数据（获取最近50根）
+      const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
+      
+      console.log(`[MACD历史K线] 请求${symbol}的历史K线数据 (${i + 1}/${coins.length})`, endpoint)
+      
+      const response = await axios.get(endpoint)
+      console.log(`[MACD历史K线] ${symbol} API响应:`, {
+        status: response.status,
+        dataType: typeof response.data,
+        isArray: Array.isArray(response.data),
+        dataLength: Array.isArray(response.data) ? response.data.length : (response.data?.data?.length || 0)
+      })
+      
+      const klines = response.data?.data || response.data || []
+      
+      if (!Array.isArray(klines)) {
+        console.error(`[MACD历史K线] ${symbol} API返回数据格式错误，不是数组:`, response.data)
+        continue
+      }
+      
+      if (klines.length === 0) {
+        console.warn(`[MACD历史K线] ${symbol} API返回空数组`)
+        continue
+      }
+      
+      if (klines.length > 0) {
+        // 币安K线格式：[开盘时间, 开盘价, 最高价, 最低价, 收盘价, ...]
+        // 收盘价在索引4
+        const klineData = klines.map(k => {
+          if (Array.isArray(k) && k.length >= 5) {
+            return {
+              time: k[0], // 开盘时间（毫秒时间戳）
+              close: parseFloat(k[4]) // 收盘价
+            }
+          }
+          return null
+        }).filter(k => k !== null && k.close > 0)
+        
+        if (klineData.length > 0) {
+          // 按时间排序（从旧到新）
+          klineData.sort((a, b) => a.time - b.time)
+          
+          // 更新或设置K线数据
+          binanceKlineData.value.set(symbol, klineData)
+          
+          console.log(`[MACD历史K线] ${symbol} 获取成功: ${klineData.length}根K线`)
+          
+          // 如果有足够数据，立即计算MACD
+          if (klineData.length >= 34) {
+            const closes = klineData.map(k => k.close)
+            const macdResult = calculateMACD(closes)
+            
+            if (macdResult) {
+              // 使用最新的K线时间戳
+              const latestKline = klineData[klineData.length - 1]
+              const timestamp = formatTimestampFromBinance(latestKline.time)
+              
+              if (!macdDataCache.value.has(coin)) {
+                macdDataCache.value.set(coin, new Map())
+              }
+              const coinCache = macdDataCache.value.get(coin)
+              coinCache.set(timestamp, macdResult)
+              
+              console.log(`[MACD历史K线] ${coin}(${symbol}) MACD计算完成:`, {
+                timestamp,
+                macd: macdResult.macd?.toFixed(6),
+                signal: macdResult.signal?.toFixed(6),
+                histogram: macdResult.histogram?.toFixed(6)
+              })
+            }
+          }
+        }
+      }
+      
+      // 每个请求间隔100ms，避免并发过多
+      if (i < coins.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    } catch (error) {
+      console.error(`[MACD历史K线] 获取${symbol}历史K线失败:`, {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        endpoint: `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
+      })
+      // 继续处理下一个币种
+    }
+  }
+  
+  console.log(`[MACD历史K线] 批量获取完成`)
+}
+
+// 获取单个币种的历史K线数据
+async function fetchHistoricalKlinesForCoin(coin) {
+  const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+  
+  try {
+    // 如果已经有足够的K线数据，跳过
+    const existingKlines = binanceKlineData.value.get(symbol)
+    if (existingKlines && existingKlines.length >= 50) {
+      console.log(`[MACD历史K线] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
+      return
+    }
+    
+    // 通过后端代理获取币安历史K线数据（获取最近50根）
+    const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
+    
+    console.log(`[MACD历史K线] 请求${symbol}的历史K线数据`, endpoint)
+    
+    const response = await axios.get(endpoint)
+    console.log(`[MACD历史K线] ${symbol} API响应:`, {
+      status: response.status,
+      dataType: typeof response.data,
+      isArray: Array.isArray(response.data),
+      dataLength: Array.isArray(response.data) ? response.data.length : (response.data?.data?.length || 0)
+    })
+    
+    const klines = response.data?.data || response.data || []
+    
+    if (!Array.isArray(klines)) {
+      console.error(`[MACD历史K线] ${symbol} API返回数据格式错误，不是数组:`, response.data)
+      return
+    }
+    
+    if (klines.length === 0) {
+      console.warn(`[MACD历史K线] ${symbol} API返回空数组`)
+      return
+    }
+    
+    // 币安K线格式：[开盘时间, 开盘价, 最高价, 最低价, 收盘价, ...]
+    // 收盘价在索引4
+    const klineData = klines.map(k => {
+      if (Array.isArray(k) && k.length >= 5) {
+        return {
+          time: k[0], // 开盘时间（毫秒时间戳）
+          close: parseFloat(k[4]) // 收盘价
+        }
+      }
+      return null
+    }).filter(k => k !== null && k.close > 0)
+    
+    if (klineData.length > 0) {
+      // 按时间排序（从旧到新）
+      klineData.sort((a, b) => a.time - b.time)
+      
+      // 更新或设置K线数据
+      binanceKlineData.value.set(symbol, klineData)
+      
+      console.log(`[MACD历史K线] ${symbol} 获取成功: ${klineData.length}根K线`)
+      
+      // 如果有足够数据，立即计算MACD
+      if (klineData.length >= 34) {
+        const closes = klineData.map(k => k.close)
+        const macdResult = calculateMACD(closes)
+        
+        if (macdResult) {
+          // 使用最新的K线时间戳
+          const latestKline = klineData[klineData.length - 1]
+          const timestamp = formatTimestampFromBinance(latestKline.time)
+          
+          if (!macdDataCache.value.has(coin)) {
+            macdDataCache.value.set(coin, new Map())
+          }
+          const coinCache = macdDataCache.value.get(coin)
+          coinCache.set(timestamp, macdResult)
+          
+          console.log(`[MACD历史K线] ${coin}(${symbol}) MACD计算完成:`, {
+            timestamp,
+            macd: macdResult.macd?.toFixed(6),
+            signal: macdResult.signal?.toFixed(6),
+            histogram: macdResult.histogram?.toFixed(6)
+          })
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`[MACD历史K线] 获取${symbol}历史K线失败:`, {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status,
+      endpoint: `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
+    })
+  }
+}
+
+// 更新币安WebSocket订阅（当币种列表变化时）
+function updateBinanceWebSocketSubscriptions() {
+  if (!binanceWS || binanceWS.readyState !== WebSocket.OPEN) {
+    initBinanceWebSocket()
+    return
+  }
+  
+  // 获取当前所有币种
+  const currentSymbols = new Set()
+  internalCoins.value.forEach(coin => {
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    currentSymbols.add(symbol.toLowerCase())
+  })
+  
+  // 检查是否需要重新订阅
+  const needsResubscribe = Array.from(currentSymbols).some(s => !binanceWSSubscriptions.value.has(s))
+  
+  if (needsResubscribe) {
+    // 重新初始化连接以订阅新币种
+    initBinanceWebSocket()
+  }
+}
 
 // 快速下单确认模态框
 const showQuickOrderConfirmModal = ref(false)
@@ -829,6 +1228,196 @@ function formatPercentDisplay(percent) {
   return `${sign}${percent.toFixed(2)}%`
 }
 
+// 计算EMA（指数移动平均）
+function calculateEMA(prices, period) {
+  if (!Array.isArray(prices) || prices.length < period) return null
+  
+  const multiplier = 2 / (period + 1)
+  let ema = prices.slice(0, period).reduce((sum, price) => sum + price, 0) / period
+  
+  for (let i = period; i < prices.length; i++) {
+    ema = (prices[i] - ema) * multiplier + ema
+  }
+  
+  return ema
+}
+
+// 计算MACD指标
+function calculateMACD(prices) {
+  if (!Array.isArray(prices) || prices.length < 26) {
+    console.log(`[MACD计算] 价格数据不足: ${prices?.length || 0}/26`)
+    return null
+  }
+  
+  const ema12 = calculateEMA(prices, 12)
+  const ema26 = calculateEMA(prices, 26)
+  
+  if (!ema12 || !ema26) {
+    console.log(`[MACD计算] EMA计算失败: ema12=${ema12}, ema26=${ema26}`)
+    return null
+  }
+  
+  const macdLine = ema12 - ema26
+  
+  // 计算信号线（MACD的9日EMA）
+  // 需要至少26+9-1=34个数据点来计算信号线
+  if (prices.length < 34) {
+    console.log(`[MACD计算] 数据不足计算信号线: ${prices.length}/34，返回基础MACD`)
+    return { macd: macdLine, signal: null, histogram: macdLine }
+  }
+  
+  // 计算MACD线的历史值用于计算信号线
+  const macdValues = []
+  for (let i = 26; i < prices.length; i++) {
+    const periodPrices = prices.slice(0, i + 1)
+    const periodEma12 = calculateEMA(periodPrices, 12)
+    const periodEma26 = calculateEMA(periodPrices, 26)
+    if (periodEma12 && periodEma26) {
+      macdValues.push(periodEma12 - periodEma26)
+    }
+  }
+  
+  if (macdValues.length < 9) {
+    console.log(`[MACD计算] MACD历史值不足: ${macdValues.length}/9`)
+    return { macd: macdLine, signal: null, histogram: macdLine }
+  }
+  
+  const signalLine = calculateEMA(macdValues, 9)
+  const histogram = macdLine - (signalLine || 0)
+  
+  console.log(`[MACD计算] 计算完成:`, {
+    priceCount: prices.length,
+    ema12: ema12.toFixed(6),
+    ema26: ema26.toFixed(6),
+    macd: macdLine.toFixed(6),
+    signal: signalLine?.toFixed(6),
+    histogram: histogram.toFixed(6)
+  })
+  
+  return { macd: macdLine, signal: signalLine, histogram }
+}
+
+// 获取币种的MACD数据（从WebSocket缓存中获取）
+function fetchAndCacheMACDData(coin, timestamp) {
+  console.log(`[MACD获取] 请求${coin}@${timestamp}的MACD数据`)
+  
+  if (!macdDataCache.value.has(coin)) {
+    macdDataCache.value.set(coin, new Map())
+  }
+  
+  const coinCache = macdDataCache.value.get(coin)
+  if (coinCache.has(timestamp)) {
+    const cached = coinCache.get(timestamp)
+    console.log(`[MACD获取] ${coin}@${timestamp} 使用缓存数据:`, {
+      macd: cached.macd?.toFixed(6),
+      signal: cached.signal?.toFixed(6),
+      histogram: cached.histogram?.toFixed(6)
+    })
+    return cached
+  }
+  
+  // 从WebSocket缓存中获取K线数据
+  const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+  const klines = binanceKlineData.value.get(symbol)
+  
+  console.log(`[MACD获取] ${coin}(${symbol}) K线缓存状态:`, {
+    hasKlines: !!klines,
+    klineCount: klines?.length || 0,
+    allSymbols: Array.from(binanceKlineData.value.keys())
+  })
+  
+  if (!klines || klines.length < 34) {
+    console.warn(`[MACD获取] ${coin}(${symbol}) K线数据不足: ${klines?.length || 0}/34`)
+    // 如果K线数据不足，尝试重新获取历史K线（只针对这个币种）
+    console.log(`[MACD获取] ${coin}(${symbol}) 尝试重新获取历史K线数据`)
+    // 异步获取，不阻塞当前流程
+    fetchHistoricalKlinesForCoin(coin).catch(err => {
+      console.error(`[MACD获取] ${coin}(${symbol}) 重新获取历史K线失败:`, err)
+    })
+    return null
+  }
+  
+  // 提取收盘价
+  const closes = klines.map(k => k.close).filter(p => p > 0)
+  
+  if (closes.length < 34) {
+    console.log(`[MACD获取] ${coin}(${symbol}) 有效收盘价不足: ${closes.length}/34`)
+    return null
+  }
+  
+  // 计算MACD
+  const macdResult = calculateMACD(closes)
+  
+  if (macdResult) {
+    coinCache.set(timestamp, macdResult)
+    console.log(`[MACD获取] ${coin}@${timestamp} MACD计算并缓存成功`)
+    return macdResult
+  }
+  
+  console.log(`[MACD获取] ${coin}@${timestamp} MACD计算失败`)
+  return null
+}
+
+// 检查MACD是否下跌且动能减弱（使用缓存数据）
+function checkMACDDownAndWeakening(coin, timestamp) {
+  if (!macdDataCache.value.has(coin)) {
+    console.log(`[MACD检查] ${coin} 无MACD缓存数据`)
+    return false
+  }
+  
+  const coinCache = macdDataCache.value.get(coin)
+  const macdData = coinCache.get(timestamp)
+  
+  if (!macdData || macdData.histogram === null || macdData.histogram === undefined) {
+    console.log(`[MACD检查] ${coin}@${timestamp} 无MACD数据`)
+    return false
+  }
+  
+  // MACD下跌：MACD柱 < 0（或者MACD线 < 信号线）
+  const isMACDDown = macdData.histogram < 0 || (macdData.macd < (macdData.signal || 0))
+  
+  console.log(`[MACD检查] ${coin}@${timestamp}:`, {
+    macd: macdData.macd?.toFixed(6),
+    signal: macdData.signal?.toFixed(6),
+    histogram: macdData.histogram?.toFixed(6),
+    isMACDDown
+  })
+  
+  if (!isMACDDown) {
+    console.log(`[MACD检查] ${coin}@${timestamp} MACD未下跌`)
+    return false
+  }
+  
+  // 获取前一个时间戳的MACD数据
+  const currentIndex = timeColumns.value.indexOf(timestamp)
+  if (currentIndex <= 0) {
+    console.log(`[MACD检查] ${coin}@${timestamp} 无前一个时间戳`)
+    return false
+  }
+  
+  const prevTimestamp = timeColumns.value[currentIndex - 1]
+  const prevMacdData = coinCache.get(prevTimestamp)
+  
+  if (!prevMacdData || prevMacdData.histogram === null || prevMacdData.histogram === undefined) {
+    console.log(`[MACD检查] ${coin}@${prevTimestamp} 无前一个MACD数据`)
+    return false
+  }
+  
+  // 动能减弱：当前MACD柱的绝对值 < 前一根MACD柱的绝对值
+  const currentHistogramAbs = Math.abs(macdData.histogram)
+  const prevHistogramAbs = Math.abs(prevMacdData.histogram)
+  const isWeakening = currentHistogramAbs < prevHistogramAbs
+  
+  console.log(`[MACD检查] ${coin}@${timestamp} 动能分析:`, {
+    currentHistogramAbs: currentHistogramAbs.toFixed(6),
+    prevHistogramAbs: prevHistogramAbs.toFixed(6),
+    isWeakening,
+    result: isWeakening ? '✅ 满足条件（粉色）' : '❌ 动能未减弱'
+  })
+  
+  return isWeakening
+}
+
 // 获取单元格背景色
 function getCellColor(row, timestamp, isNewData = false) {
   const currentValue = row._rawByTime && row._rawByTime[timestamp]
@@ -848,6 +1437,13 @@ function getCellColor(row, timestamp, isNewData = false) {
   const prevValue = row._rawByTime && row._rawByTime[prevTimestamp]
   
   if (prevValue === undefined || prevValue === null || prevValue === 0) return ''
+  
+  // 检查MACD下跌且动能减弱（粉色优先级最高，始终检查，不限制isNewData）
+  const macdCondition = checkMACDDownAndWeakening(row.coin, timestamp)
+  if (macdCondition) {
+    console.log(`[MACD颜色] ${row.coin}@${timestamp} 应用粉色背景`)
+    return 'background-color: #fce7f3;' // 粉色
+  }
   
   // 检查是否超过阈值（只有新数据才触发警告）
   const dropAmount = prevValue - currentValue
@@ -1294,6 +1890,9 @@ async function restoreHistoricalData() {
 async function rebuildTableForCoins(newCoins) {
   internalCoins.value = newCoins
   
+  // 更新币安WebSocket订阅
+  updateBinanceWebSocketSubscriptions()
+  
   // 重建表格数据
   const newTableData = []
   for (const coin of internalCoins.value) {
@@ -1346,6 +1945,18 @@ async function refreshTable() {
     const batchResults = await getBatchCoinPositions(internalCoins.value)
     const results = internalCoins.value.map(coin => batchResults[coin] || { value: 0, timestamp: null, dataCount: 0, isMonitored: false })
 
+    console.log(`[refreshTable] API返回结果:`, {
+      coinCount: results.length,
+      results: results.map((r, i) => ({
+        coin: internalCoins.value[i],
+        timestamp: r.timestamp,
+        value: r.value,
+        hasTimestamp: !!r.timestamp
+      })),
+      currentTimeColumns: timeColumns.value.length,
+      currentTimeColumnsList: timeColumns.value.slice(-5) // 显示最后5个时间戳
+    })
+
     // 收集所有新的时间戳
     const newTimestamps = new Set()
     
@@ -1358,30 +1969,75 @@ async function refreshTable() {
       const { value: raw, timestamp, dataCount, isMonitored } = coinData
       
       // 检查时间是否比当前最新时间更新
+      // 注意：timestamp是从后端返回的，格式可能是"K14:23:45"这样的（有字母前缀，秒不一定是00）
       const shouldUpdate = timestamp && (!row._latestTimestamp || timestamp > row._latestTimestamp)
       
-      if (shouldUpdate) {
-        // 数据更新逻辑
-      }
+      console.log(`[refreshTable] ${row.coin} 检查更新:`, {
+        timestamp,
+        timestampType: typeof timestamp,
+        hasTimestamp: !!timestamp,
+        currentLatest: row._latestTimestamp,
+        shouldUpdate,
+        timestampInColumns: timestamp ? timeColumns.value.includes(timestamp) : false,
+        timeColumnsSample: timeColumns.value.slice(-3) // 显示最后3个时间戳作为参考
+      })
+      
+      console.log(`[refreshTable] ${row.coin} 检查更新:`, {
+        timestamp,
+        hasTimestamp: !!timestamp,
+        currentLatest: row._latestTimestamp,
+        shouldUpdate,
+        timestampInColumns: timestamp ? timeColumns.value.includes(timestamp) : false
+      })
       
       if (shouldUpdate) {
         const display = formatDisplayNumber(raw)
         
-        // 使用后端返回的时间戳作为列名
+        console.log(`[refreshTable] 更新${row.coin}数据:`, {
+          timestamp,
+          raw,
+          display,
+          previousLatest: row._latestTimestamp,
+          isNew: !row._latestTimestamp || timestamp > row._latestTimestamp
+        })
+        
+        // 使用后端返回的时间戳作为列名（格式如 "K14:23:45"）
         row[timestamp] = display
         // 保存原始值用于 tooltip 与涨跌计算
         if (!row._rawByTime) row._rawByTime = {}
         row._rawByTime[timestamp] = raw
         
+        console.log(`[refreshTable] ${row.coin} 数据已设置:`, {
+          timestamp,
+          rowHasTimestamp: row[timestamp],
+          rowRawByTime: row._rawByTime[timestamp],
+          display
+        })
+        
+        // 收集新的时间戳（在更新_latestTimestamp之前检查）
+        // 注意：这里检查的是timeColumns，而不是newTimestamps
+        // 因为newTimestamps是本次刷新要添加的新时间戳，而timeColumns是已经存在的列
+        const isNewTimestamp = !timeColumns.value.includes(timestamp)
+        console.log(`[refreshTable] ${row.coin} 检查时间戳:`, {
+          timestamp,
+          inTimeColumns: timeColumns.value.includes(timestamp),
+          inNewTimestamps: newTimestamps.has(timestamp),
+          isNewTimestamp,
+          timeColumnsLength: timeColumns.value.length,
+          timeColumnsLast3: timeColumns.value.slice(-3)
+        })
+        
+        if (isNewTimestamp) {
+          newTimestamps.add(timestamp)
+          console.log(`[refreshTable] ${row.coin} 发现新时间戳: ${timestamp}, 已添加到newTimestamps, 当前newTimestamps大小: ${newTimestamps.size}, 内容:`, Array.from(newTimestamps))
+        } else {
+          console.log(`[refreshTable] ${row.coin} 时间戳已存在: ${timestamp}, 跳过添加，但数据已更新到row对象`)
+        }
+        
         // 更新最新时间戳
         row._latestTimestamp = timestamp
         row._dataCount = dataCount
         row._isMonitored = isMonitored
-        
-        // 收集新的时间戳
-        if (!timeColumns.value.includes(timestamp)) {
-          newTimestamps.add(timestamp)
-        }
         
         // 如果是新添加的币种第一次有数据，标记需要重新加载
         if (row._needsReload && raw > 0) {
@@ -1440,6 +2096,17 @@ async function refreshTable() {
         
         // 更新滑动窗口
         updateSlidingWindow(row.coin, timestamp, raw)
+        
+        // 预加载MACD数据（不阻塞主流程，仅对新数据）
+        // shouldUpdate表示这是新数据
+        // 注意：fetchAndCacheMACDData是同步函数，不需要.catch
+        if (shouldUpdate) {
+          try {
+            fetchAndCacheMACDData(row.coin, timestamp)
+          } catch (err) {
+            console.error(`预加载${row.coin}的MACD数据失败:`, err)
+          }
+        }
       }
     })
     
@@ -1459,54 +2126,77 @@ async function refreshTable() {
 
     // 添加新时间戳列（去重后）
     const sortedNewTimestamps = Array.from(newTimestamps).sort();
-    sortedNewTimestamps.forEach(timestamp => {
-      const newCol = {
-        title: timestamp.replace(/^[A-Z]/, ''), // 去掉字母前缀
-        key: timestamp,
-        width: CELL_WIDTH,
-        render: (row) => {
-          // 检查这个时间戳是否真的是新数据（比最新时间戳更新）
-          const isReallyNewData = row._latestTimestamp === timestamp
-          const cellStyle = getCellColor(row, timestamp, isReallyNewData)
-          
-          // 确保显示值不为 undefined
-          const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
-          
-          // 根据开关决定显示格式
-          let displayValue
-          let tooltipValue
-          if (showAsPercent.value) {
-            const percent = calculatePercentFromBaseline(row, rawValue)
-            displayValue = formatPercentDisplay(percent)
-            tooltipValue = formatWithSeparators(rawValue)
-          } else {
-            displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
-            tooltipValue = formatWithSeparators(rawValue)
-          }
-          
-          return h(
-            NTooltip,
-            { placement: 'top' },
-            {
-              trigger: () => h('span', { style: cellStyle }, displayValue),
-              default: () => tooltipValue
+    console.log(`[refreshTable] 新时间戳数量: ${sortedNewTimestamps.length}`, {
+      newTimestamps: sortedNewTimestamps,
+      newTimestampsSetSize: newTimestamps.size,
+      timeColumnsLength: timeColumns.value.length,
+      timeColumnsLast5: timeColumns.value.slice(-5)
+    })
+    
+    if (sortedNewTimestamps.length > 0) {
+      sortedNewTimestamps.forEach(timestamp => {
+        console.log(`[refreshTable] 添加新列: ${timestamp}`)
+        const newCol = {
+          title: timestamp.replace(/^[A-Z]/, ''), // 去掉字母前缀
+          key: timestamp,
+          width: CELL_WIDTH,
+          render: (row) => {
+            // 检查这个时间戳是否真的是新数据（比最新时间戳更新）
+            const isReallyNewData = row._latestTimestamp === timestamp
+            const cellStyle = getCellColor(row, timestamp, isReallyNewData)
+            
+            // 确保显示值不为 undefined
+            const rawValue = row._rawByTime && row._rawByTime[timestamp] !== undefined ? row._rawByTime[timestamp] : 0
+            
+            // 根据开关决定显示格式
+            let displayValue
+            let tooltipValue
+            if (showAsPercent.value) {
+              const percent = calculatePercentFromBaseline(row, rawValue)
+              displayValue = formatPercentDisplay(percent)
+              tooltipValue = formatWithSeparators(rawValue)
+            } else {
+              displayValue = row[timestamp] !== undefined ? row[timestamp] : '0'
+              tooltipValue = formatWithSeparators(rawValue)
             }
-          )
+            
+            console.log(`[refreshTable] 渲染单元格 ${row.coin}@${timestamp}:`, {
+              displayValue,
+              rawValue,
+              rowHasTimestamp: row[timestamp],
+              rowRawByTime: row._rawByTime?.[timestamp]
+            })
+            
+            return h(
+              NTooltip,
+              { placement: 'top' },
+              {
+                trigger: () => h('span', { style: cellStyle }, displayValue),
+                default: () => tooltipValue
+              }
+            )
+          }
+        };
+        const last = columns.value[columns.value.length - 1];
+        const secondLast = columns.value[columns.value.length - 2];
+        
+        // 如果最后两列是阈值列和操作列，则在阈值列之前插入新列
+        if (last && last.key === 'actions' && secondLast && secondLast.key === 'thresholds') {
+          columns.value.splice(columns.value.length - 2, 0, newCol);
+          console.log(`[refreshTable] 在阈值列之前插入新列: ${timestamp}`)
+        } else if (last && last.key === 'actions') {
+          columns.value.splice(columns.value.length - 1, 0, newCol);
+          console.log(`[refreshTable] 在操作列之前插入新列: ${timestamp}`)
+        } else {
+          columns.value.push(newCol);
+          console.log(`[refreshTable] 直接添加新列: ${timestamp}`)
         }
-      };
-      const last = columns.value[columns.value.length - 1];
-      const secondLast = columns.value[columns.value.length - 2];
-      
-      // 如果最后两列是阈值列和操作列，则在阈值列之前插入新列
-      if (last && last.key === 'actions' && secondLast && secondLast.key === 'thresholds') {
-        columns.value.splice(columns.value.length - 2, 0, newCol);
-      } else if (last && last.key === 'actions') {
-        columns.value.splice(columns.value.length - 1, 0, newCol);
-      } else {
-        columns.value.push(newCol);
-      }
-      timeColumns.value.push(timestamp);
-    });
+        timeColumns.value.push(timestamp);
+        console.log(`[refreshTable] 新列添加完成: ${timestamp}, 当前列数: ${columns.value.length}, 时间列数: ${timeColumns.value.length}`)
+      });
+    } else {
+      console.log(`[refreshTable] 没有新时间戳，跳过添加列`)
+    }
     
     // 更新滚动宽度
     updateScrollX();
@@ -1628,6 +2318,14 @@ async function addCoin(value) {
         
         // 通知父组件币种已添加
         emit('coin-added', value)
+        
+        // 更新币安WebSocket订阅
+        updateBinanceWebSocketSubscriptions()
+        
+        // 获取新添加币种的历史K线数据 - 异步执行，不阻塞核心逻辑
+        fetchHistoricalKlines().catch(err => {
+          console.error('[MACD历史K线] 获取失败，不影响核心功能:', err)
+        })
       }
       await refreshTable()
     })
@@ -2772,6 +3470,16 @@ onUnmounted(() => {
     chartInstance.value.dispose()
     chartInstance.value = null
   }
+  
+  // 关闭币安WebSocket连接
+  if (binanceWS) {
+    try {
+      binanceWS.close()
+      binanceWS = null
+    } catch (e) {
+      console.error('关闭币安WebSocket失败:', e)
+    }
+  }
 })
 
 // 初始化
@@ -2784,8 +3492,11 @@ onMounted(async () => {
   await rebuildTableForCoins(serverCoins)
   await restoreHistoricalData() // 恢复历史数据
   
+  // 初始化币安WebSocket连接（rebuildTableForCoins中已调用updateBinanceWebSocketSubscriptions，但确保初始化）
+  initBinanceWebSocket()
+  
   // 启动定时器
-  setInterval(refreshTable, 15 * 1000) // 每5秒刷新数据（降低频率）
+  setInterval(refreshTable, 15 * 1000) // 每15秒刷新数据
   setInterval(checkServerCoinsSync, 30 * 1000) // 每30秒检查币列表同步（降低频率）
   
   // 首次刷新
