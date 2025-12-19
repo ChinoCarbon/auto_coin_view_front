@@ -75,8 +75,15 @@
          跌破阈值
        </span>
        <span class="legend-item">
+         <span style="display: flex; flex-direction: row; align-items: center; gap: 2px;">
+           <span class="color-dot" style="width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; display: inline-block;"></span>
+           <span class="color-dot" style="width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; display: inline-block;"></span>
+         </span>
+         5分钟MACD金叉
+       </span>
+       <span class="legend-item">
          <span class="color-dot" style="width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; display: inline-block;"></span>
-         MACD金叉
+         1分钟MACD金叉
        </span>
        <span class="legend-item">
          <span class="color-dot" style="width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; display: inline-block;"></span>
@@ -260,11 +267,15 @@ const slidingWindowCooldown = ref(new Map()) // key: coin, value: { lastAlertTim
 
 // MACD数据缓存（每个币种和时间戳）
 const macdDataCache = ref(new Map()) // key: coin, value: Map<timestamp, { macd, signal, histogram }>
+const macdDataCache5m = ref(new Map()) // key: coin, value: Map<timestamp, { macd, signal, histogram }> (5分钟MACD)
 
 // 币安WebSocket连接和K线数据
 let binanceWS = null
+let binanceWS5m = null // 5分钟K线WebSocket连接
 const binanceKlineData = ref(new Map()) // key: symbol (如BTCUSDT), value: Array<{time, close}>
+const binanceKlineData5m = ref(new Map()) // key: symbol (如BTCUSDT), value: Array<{time, close}> (5分钟K线)
 const binanceWSSubscriptions = ref(new Set()) // 已订阅的交易对
+const binanceWSSubscriptions5m = ref(new Set()) // 已订阅的5分钟K线交易对
 
 // 初始化币安WebSocket连接
 function initBinanceWebSocket() {
@@ -404,6 +415,138 @@ function initBinanceWebSocket() {
     setTimeout(() => {
       if (internalCoins.value.length > 0) {
         initBinanceWebSocket()
+      }
+    }, 5000)
+  }
+}
+
+// 初始化币安5分钟K线WebSocket连接
+function initBinanceWebSocket5m() {
+  if (binanceWS5m && binanceWS5m.readyState === WebSocket.OPEN) {
+    return // 已经连接
+  }
+  
+  // 关闭旧连接
+  if (binanceWS5m) {
+    try {
+      binanceWS5m.close()
+    } catch (e) {}
+  }
+  
+  // 获取所有需要订阅的币种
+  const symbols = new Set()
+  internalCoins.value.forEach(coin => {
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    symbols.add(symbol.toLowerCase())
+  })
+  
+  if (symbols.size === 0) {
+    return
+  }
+  
+  // 构建订阅流：btcusdt@kline_5m/ethusdt@kline_5m
+  const streams = Array.from(symbols).map(s => `${s}@kline_5m`).join('/')
+  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+  
+  console.log('初始化币安5分钟K线WebSocket连接，订阅K线数据:', Array.from(symbols))
+  
+  binanceWS5m = new WebSocket(wsUrl)
+  
+  binanceWS5m.onopen = () => {
+    console.log('✅ 币安5分钟K线WebSocket连接成功')
+  }
+  
+  binanceWS5m.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data)
+      
+      if (message.stream && message.data) {
+        const stream = message.stream // 如 "btcusdt@kline_5m"
+        const symbol = stream.split('@')[0].toUpperCase() // "BTCUSDT"
+        const klineData = message.data.k // K线数据
+        
+        if (klineData && klineData.x) { // x为true表示K线已完成
+          const closePrice = parseFloat(klineData.c) // 收盘价
+          const openTime = klineData.t // 开盘时间（毫秒时间戳）
+          
+          console.log(`[MACD 5m] 收到${symbol}完成5分钟K线:`, {
+            time: new Date(openTime).toLocaleString('zh-CN'),
+            close: closePrice,
+            klineCount: binanceKlineData5m.value.get(symbol)?.length || 0
+          })
+          
+          if (!binanceKlineData5m.value.has(symbol)) {
+            binanceKlineData5m.value.set(symbol, [])
+          }
+          
+          const klines = binanceKlineData5m.value.get(symbol)
+          
+          // 检查是否已存在该时间点的K线
+          const existingIndex = klines.findIndex(k => k.time === openTime)
+          if (existingIndex !== -1) {
+            // 更新现有K线
+            klines[existingIndex].close = closePrice
+          } else {
+            // 添加新K线
+            klines.push({
+              time: openTime,
+              close: closePrice
+            })
+            
+            // 保持最多50根K线
+            if (klines.length > 50) {
+              klines.shift()
+            }
+          }
+          
+          // 当有足够数据时，计算5分钟MACD
+          if (klines.length >= 34) {
+            const closes = klines.map(k => k.close)
+            const macdResult = calculateMACD(closes)
+            
+            if (macdResult) {
+              // 将币安时间戳转换为表格使用的时间格式
+              const timestamp = formatTimestampFromBinance(openTime)
+              
+              // 找到对应的币种（symbol可能是BTCUSDT，coin可能是BTC）
+              const coin = internalCoins.value.find(c => {
+                const coinSymbol = c.endsWith('USDT') ? c : `${c}USDT`
+                return coinSymbol === symbol
+              })
+              
+              if (coin) {
+                if (!macdDataCache5m.value.has(coin)) {
+                  macdDataCache5m.value.set(coin, new Map())
+                }
+                const coinCache = macdDataCache5m.value.get(coin)
+                coinCache.set(timestamp, macdResult)
+                
+                console.log(`[MACD 5m] ${coin}(${symbol}) 5分钟MACD计算完成:`, {
+                  timestamp,
+                  macd: macdResult.macd?.toFixed(6),
+                  signal: macdResult.signal?.toFixed(6),
+                  histogram: macdResult.histogram?.toFixed(6)
+                })
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[MACD 5m] 处理币安WebSocket消息失败:', error)
+    }
+  }
+  
+  binanceWS5m.onerror = (error) => {
+    console.error('币安5分钟K线WebSocket错误:', error)
+  }
+  
+  binanceWS5m.onclose = () => {
+    console.log('币安5分钟K线WebSocket连接关闭')
+    // 5秒后重连
+    setTimeout(() => {
+      if (internalCoins.value.length > 0) {
+        initBinanceWebSocket5m()
       }
     }, 5000)
   }
@@ -1459,6 +1602,58 @@ function checkMACDGoldenCross(coin, timestamp, isLatestTimestamp = false) {
   return isGoldenCross
 }
 
+// 检查5分钟MACD是否金叉（MACD线上穿信号线）
+// 注意：只在K线收线后判断，未收线的K线不判断
+function checkMACDGoldenCross5m(coin, timestamp, isLatestTimestamp = false) {
+  if (!macdDataCache5m.value.has(coin)) {
+    return false
+  }
+  
+  const coinCache = macdDataCache5m.value.get(coin)
+  
+  // 获取当前时间戳在时间列中的索引
+  const currentIndex = timeColumns.value.indexOf(timestamp)
+  if (currentIndex <= 0) {
+    return false
+  }
+  
+  // 如果是最新时间戳，需要确保MACD数据存在（确保K线已收线）
+  const macdData = coinCache.get(timestamp)
+  if (!macdData || macdData.macd === null || macdData.macd === undefined || 
+      macdData.signal === null || macdData.signal === undefined) {
+    if (isLatestTimestamp) {
+      return false
+    }
+    return false
+  }
+  
+  // 获取前一个时间戳的MACD数据
+  const prevTimestamp = timeColumns.value[currentIndex - 1]
+  const prevMacdData = coinCache.get(prevTimestamp)
+  
+  if (!prevMacdData || prevMacdData.macd === null || prevMacdData.macd === undefined ||
+      prevMacdData.signal === null || prevMacdData.signal === undefined) {
+    return false
+  }
+  
+  // 金叉：前一个时间戳MACD线 < 信号线，当前时间戳MACD线 >= 信号线
+  const prevIsBelow = prevMacdData.macd < prevMacdData.signal
+  const currentIsAbove = macdData.macd >= macdData.signal
+  const isGoldenCross = prevIsBelow && currentIsAbove
+  
+  if (isGoldenCross) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp}:`, {
+      isLatestTimestamp,
+      prevMacd: prevMacdData.macd?.toFixed(6),
+      prevSignal: prevMacdData.signal?.toFixed(6),
+      currentMacd: macdData.macd?.toFixed(6),
+      currentSignal: macdData.signal?.toFixed(6)
+    })
+  }
+  
+  return isGoldenCross
+}
+
 // 获取单元格背景色
 function getCellColor(row, timestamp, isNewData = false) {
   const currentValue = row._rawByTime && row._rawByTime[timestamp]
@@ -1755,17 +1950,39 @@ async function rebuildColumnsWithTimeData() {
         // 检查MACD金叉和减弱（金叉优先）
         // 如果是最新时间戳，需要特别处理（可能K线未收线）
         const isLatestTimestamp = row._latestTimestamp === time
-        const isGoldenCross = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
-        const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
+        const isGoldenCross1m = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
+        const isGoldenCross5m = checkMACDGoldenCross5m(row.coin, time, isLatestTimestamp)
+        const isWeakening = !isGoldenCross1m && !isGoldenCross5m && checkMACDDownAndWeakening(row.coin, time)
         
         // 构建显示内容
+        let indicatorElement = null
+        if (isGoldenCross5m) {
+          // 5分钟金叉显示两个红点（横向排列）
+          indicatorElement = h('div', {
+            style: 'display: flex; flex-direction: row; align-items: center; gap: 2px; margin-top: 2px;'
+          }, [
+            h('div', {
+              style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%;'
+            }),
+            h('div', {
+              style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%;'
+            })
+          ])
+        } else if (isGoldenCross1m) {
+          // 1分钟金叉显示一个红点
+          indicatorElement = h('div', {
+            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+          })
+        } else if (isWeakening) {
+          // 减弱显示一个蓝点
+          indicatorElement = h('div', {
+            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+          })
+        }
+        
         const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
           h('span', { style: cellStyle }, displayValue),
-          isGoldenCross ? h('div', {
-            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
-          }) : isWeakening ? h('div', {
-            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
-          }) : null
+          indicatorElement
         ])
         
         return h(
@@ -1927,17 +2144,39 @@ async function restoreHistoricalData() {
         // 检查MACD金叉和减弱（金叉优先）
         // 如果是最新时间戳，需要特别处理（可能K线未收线）
         const isLatestTimestamp = row._latestTimestamp === time
-        const isGoldenCross = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
-        const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
+        const isGoldenCross1m = checkMACDGoldenCross(row.coin, time, isLatestTimestamp)
+        const isGoldenCross5m = checkMACDGoldenCross5m(row.coin, time, isLatestTimestamp)
+        const isWeakening = !isGoldenCross1m && !isGoldenCross5m && checkMACDDownAndWeakening(row.coin, time)
         
         // 构建显示内容
+        let indicatorElement = null
+        if (isGoldenCross5m) {
+          // 5分钟金叉显示两个红点（横向排列）
+          indicatorElement = h('div', {
+            style: 'display: flex; flex-direction: row; align-items: center; gap: 2px; margin-top: 2px;'
+          }, [
+            h('div', {
+              style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%;'
+            }),
+            h('div', {
+              style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%;'
+            })
+          ])
+        } else if (isGoldenCross1m) {
+          // 1分钟金叉显示一个红点
+          indicatorElement = h('div', {
+            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+          })
+        } else if (isWeakening) {
+          // 减弱显示一个蓝点
+          indicatorElement = h('div', {
+            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+          })
+        }
+        
         const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
           h('span', { style: cellStyle }, displayValue),
-          isGoldenCross ? h('div', {
-            style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
-          }) : isWeakening ? h('div', {
-            style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
-          }) : null
+          indicatorElement
         ])
         
         return h(
@@ -2232,20 +2471,44 @@ async function refreshTable() {
               tooltipValue = formatWithSeparators(rawValue)
             }
             
-            // 检查MACD金叉和减弱（金叉优先）
+            // 检查MACD金叉和减弱（5分钟金叉优先，然后是1分钟金叉，最后是减弱）
             // 如果是最新时间戳，需要特别处理（可能K线未收线）
             const isLatestTimestamp = row._latestTimestamp === timestamp
-            const isGoldenCross = checkMACDGoldenCross(row.coin, timestamp, isLatestTimestamp)
-            const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, timestamp)
+            const isGoldenCross5m = checkMACDGoldenCross5m(row.coin, timestamp, isLatestTimestamp)
+            const isGoldenCross1m = !isGoldenCross5m && checkMACDGoldenCross(row.coin, timestamp, isLatestTimestamp)
+            const isWeakening = !isGoldenCross5m && !isGoldenCross1m && checkMACDDownAndWeakening(row.coin, timestamp)
             
             // 构建显示内容
+            const dots = []
+            if (isGoldenCross5m) {
+              // 5分钟金叉显示两个红点
+              dots.push(
+                h('div', {
+                  style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+                }),
+                h('div', {
+                  style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+                })
+              )
+            } else if (isGoldenCross1m) {
+              // 1分钟金叉显示一个红点
+              dots.push(
+                h('div', {
+                  style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
+                })
+              )
+            } else if (isWeakening) {
+              // 减弱显示一个蓝点
+              dots.push(
+                h('div', {
+                  style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
+                })
+              )
+            }
+            
             const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
               h('span', { style: cellStyle }, displayValue),
-              isGoldenCross ? h('div', {
-                style: 'width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; margin-top: 2px;'
-              }) : isWeakening ? h('div', {
-                style: 'width: 6px; height: 6px; background-color: #3b82f6; border-radius: 50%; margin-top: 2px;'
-              }) : null
+              ...dots
             ])
             
             return h(
@@ -3561,6 +3824,16 @@ onUnmounted(() => {
       console.error('关闭币安WebSocket失败:', e)
     }
   }
+  
+  // 关闭币安5分钟K线WebSocket连接
+  if (binanceWS5m) {
+    try {
+      binanceWS5m.close()
+      binanceWS5m = null
+    } catch (e) {
+      console.error('关闭币安5分钟K线WebSocket失败:', e)
+    }
+  }
 })
 
 // 初始化
@@ -3575,6 +3848,7 @@ onMounted(async () => {
   
   // 初始化币安WebSocket连接（rebuildTableForCoins中已调用updateBinanceWebSocketSubscriptions，但确保初始化）
   initBinanceWebSocket()
+  initBinanceWebSocket5m()
   
   // 启动定时器
   setInterval(refreshTable, 15 * 1000) // 每15秒刷新数据
