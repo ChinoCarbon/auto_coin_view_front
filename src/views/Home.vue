@@ -75,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V9.1（MACD测试版）</span>
+        <span class="footer-title">动态表格 V9.2（MACD，金叉测试版）</span>
       </div>
     </n-layout-footer>
     

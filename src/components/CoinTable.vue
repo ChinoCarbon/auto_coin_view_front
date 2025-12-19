@@ -1361,7 +1361,6 @@ function fetchAndCacheMACDData(coin, timestamp) {
 // 检查MACD是否下跌且动能减弱（使用缓存数据）
 function checkMACDDownAndWeakening(coin, timestamp) {
   if (!macdDataCache.value.has(coin)) {
-    console.log(`[MACD检查] ${coin} 无MACD缓存数据`)
     return false
   }
   
@@ -1369,29 +1368,19 @@ function checkMACDDownAndWeakening(coin, timestamp) {
   const macdData = coinCache.get(timestamp)
   
   if (!macdData || macdData.histogram === null || macdData.histogram === undefined) {
-    console.log(`[MACD检查] ${coin}@${timestamp} 无MACD数据`)
     return false
   }
   
   // MACD下跌：MACD柱 < 0（或者MACD线 < 信号线）
   const isMACDDown = macdData.histogram < 0 || (macdData.macd < (macdData.signal || 0))
   
-  console.log(`[MACD检查] ${coin}@${timestamp}:`, {
-    macd: macdData.macd?.toFixed(6),
-    signal: macdData.signal?.toFixed(6),
-    histogram: macdData.histogram?.toFixed(6),
-    isMACDDown
-  })
-  
   if (!isMACDDown) {
-    console.log(`[MACD检查] ${coin}@${timestamp} MACD未下跌`)
     return false
   }
   
   // 获取前一个时间戳的MACD数据
   const currentIndex = timeColumns.value.indexOf(timestamp)
   if (currentIndex <= 0) {
-    console.log(`[MACD检查] ${coin}@${timestamp} 无前一个时间戳`)
     return false
   }
   
@@ -1399,7 +1388,6 @@ function checkMACDDownAndWeakening(coin, timestamp) {
   const prevMacdData = coinCache.get(prevTimestamp)
   
   if (!prevMacdData || prevMacdData.histogram === null || prevMacdData.histogram === undefined) {
-    console.log(`[MACD检查] ${coin}@${prevTimestamp} 无前一个MACD数据`)
     return false
   }
   
@@ -1408,14 +1396,52 @@ function checkMACDDownAndWeakening(coin, timestamp) {
   const prevHistogramAbs = Math.abs(prevMacdData.histogram)
   const isWeakening = currentHistogramAbs < prevHistogramAbs
   
-  console.log(`[MACD检查] ${coin}@${timestamp} 动能分析:`, {
-    currentHistogramAbs: currentHistogramAbs.toFixed(6),
-    prevHistogramAbs: prevHistogramAbs.toFixed(6),
-    isWeakening,
-    result: isWeakening ? '✅ 满足条件（粉色）' : '❌ 动能未减弱'
-  })
-  
   return isWeakening
+}
+
+// 检查MACD是否金叉（MACD线上穿信号线）
+function checkMACDGoldenCross(coin, timestamp) {
+  if (!macdDataCache.value.has(coin)) {
+    return false
+  }
+  
+  const coinCache = macdDataCache.value.get(coin)
+  const macdData = coinCache.get(timestamp)
+  
+  if (!macdData || macdData.macd === null || macdData.macd === undefined || 
+      macdData.signal === null || macdData.signal === undefined) {
+    return false
+  }
+  
+  // 获取前一个时间戳的MACD数据
+  const currentIndex = timeColumns.value.indexOf(timestamp)
+  if (currentIndex <= 0) {
+    return false
+  }
+  
+  const prevTimestamp = timeColumns.value[currentIndex - 1]
+  const prevMacdData = coinCache.get(prevTimestamp)
+  
+  if (!prevMacdData || prevMacdData.macd === null || prevMacdData.macd === undefined ||
+      prevMacdData.signal === null || prevMacdData.signal === undefined) {
+    return false
+  }
+  
+  // 金叉：前一个时间戳MACD线 < 信号线，当前时间戳MACD线 >= 信号线
+  const prevIsBelow = prevMacdData.macd < prevMacdData.signal
+  const currentIsAbove = macdData.macd >= macdData.signal
+  const isGoldenCross = prevIsBelow && currentIsAbove
+  
+  if (isGoldenCross) {
+    console.log(`[MACD金叉] ${coin}@${timestamp}:`, {
+      prevMacd: prevMacdData.macd?.toFixed(6),
+      prevSignal: prevMacdData.signal?.toFixed(6),
+      currentMacd: macdData.macd?.toFixed(6),
+      currentSignal: macdData.signal?.toFixed(6)
+    })
+  }
+  
+  return isGoldenCross
 }
 
 // 获取单元格背景色
@@ -1438,16 +1464,12 @@ function getCellColor(row, timestamp, isNewData = false) {
   
   if (prevValue === undefined || prevValue === null || prevValue === 0) return ''
   
-  // 检查MACD下跌且动能减弱（粉色优先级最高，始终检查，不限制isNewData）
-  const macdCondition = checkMACDDownAndWeakening(row.coin, timestamp)
-  if (macdCondition) {
-    console.log(`[MACD颜色] ${row.coin}@${timestamp} 应用粉色背景`)
-    return 'background-color: #fce7f3;' // 粉色
-  }
-  
   // 检查是否超过阈值（只有新数据才触发警告）
   const dropAmount = prevValue - currentValue
   const dropPercent = (dropAmount / prevValue) * 100
+  
+  // 先计算原背景色（不包含MACD条件）
+  let baseColor = ''
   
   // 检查跌量阈值（用户输入的是万为单位，需要转换为实际数值）
   const dropAmountThresholdInWan = row._dropAmountThreshold || 0
@@ -1460,11 +1482,10 @@ function getCellColor(row, timestamp, isNewData = false) {
         triggerThresholdWarning(row.coin, timestamp, '跌量', dropAmount, dropAmountThresholdInWan)
       }
     }
-    return 'background-color: #fecaca;' // 浅红色
+    baseColor = 'background-color: #fecaca;' // 浅红色
   }
-  
   // 检查跌幅阈值
-  if (row._dropPercentThreshold && row._dropPercentThreshold > 0 && dropPercent >= row._dropPercentThreshold) {
+  else if (row._dropPercentThreshold && row._dropPercentThreshold > 0 && dropPercent >= row._dropPercentThreshold) {
     // 触发警告（只有新数据才触发）
     if (isNewData) {
       const warningKey = `${row.coin}-${timestamp}-跌幅`
@@ -1472,21 +1493,25 @@ function getCellColor(row, timestamp, isNewData = false) {
         triggerThresholdWarning(row.coin, timestamp, '跌幅', dropPercent, row._dropPercentThreshold)
       }
     }
-    return 'background-color: #fecaca;' // 浅红色
+    baseColor = 'background-color: #fecaca;' // 浅红色
   }
-  
   // 检查快速拉升（涨幅超过2%）- 仅改变颜色，不弹出通知
-  const risePercent = ((currentValue - prevValue) / prevValue) * 100
-  if (risePercent >= 2) {
-    return 'background-color: #dbeafe;' // 浅蓝色 - 快速拉升提醒
+  else {
+    const risePercent = ((currentValue - prevValue) / prevValue) * 100
+    if (risePercent >= 2) {
+      baseColor = 'background-color: #dbeafe;' // 浅蓝色 - 快速拉升提醒
+    }
+    // 如果当前值大于等于前一个值，显示绿色
+    else if (currentValue >= prevValue) {
+      baseColor = 'background-color: #dcfce7;' // 浅绿色
+    } else {
+      baseColor = 'background-color: #fef3c7;' // 浅黄色
+    }
   }
   
-  // 如果当前值大于等于前一个值，显示绿色
-  if (currentValue >= prevValue) {
-    return 'background-color: #dcfce7;' // 浅绿色
-  } else {
-    return 'background-color: #fef3c7;' // 浅黄色
-  }
+  // MACD条件检查（减弱和金叉）不在这里处理，在render函数中处理显示字样
+  // 这里只返回原背景色
+  return baseColor
 }
 
 // 批量获取币种位置信息
@@ -1712,11 +1737,23 @@ async function rebuildColumnsWithTimeData() {
           tooltipValue = formatWithSeparators(rawValue)
         }
         
+        // 检查MACD金叉和减弱（金叉优先）
+        const isGoldenCross = checkMACDGoldenCross(row.coin, time)
+        const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
+        
+        // 构建显示内容
+        const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
+          h('span', { style: cellStyle }, displayValue),
+          (isGoldenCross || isWeakening) ? h('span', {
+            style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
+          }, isGoldenCross ? '金叉' : '减弱') : null
+        ])
+        
         return h(
           NTooltip,
           { placement: 'top' },
           {
-            trigger: () => h('span', { style: cellStyle }, displayValue),
+            trigger: () => content,
             default: () => tooltipValue
           }
         )
@@ -1868,11 +1905,23 @@ async function restoreHistoricalData() {
           tooltipValue = formatWithSeparators(rawValue)
         }
         
+        // 检查MACD金叉和减弱（金叉优先）
+        const isGoldenCross = checkMACDGoldenCross(row.coin, time)
+        const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, time)
+        
+        // 构建显示内容
+        const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
+          h('span', { style: cellStyle }, displayValue),
+          (isGoldenCross || isWeakening) ? h('span', {
+            style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
+          }, isGoldenCross ? '金叉' : '减弱') : null
+        ])
+        
         return h(
           NTooltip,
           { placement: 'top' },
           {
-            trigger: () => h('span', { style: cellStyle }, displayValue),
+            trigger: () => content,
             default: () => tooltipValue
           }
         )
@@ -2160,18 +2209,23 @@ async function refreshTable() {
               tooltipValue = formatWithSeparators(rawValue)
             }
             
-            console.log(`[refreshTable] 渲染单元格 ${row.coin}@${timestamp}:`, {
-              displayValue,
-              rawValue,
-              rowHasTimestamp: row[timestamp],
-              rowRawByTime: row._rawByTime?.[timestamp]
-            })
+            // 检查MACD金叉和减弱（金叉优先）
+            const isGoldenCross = checkMACDGoldenCross(row.coin, timestamp)
+            const isWeakening = !isGoldenCross && checkMACDDownAndWeakening(row.coin, timestamp)
+            
+            // 构建显示内容
+            const content = h('div', { style: 'display: flex; flex-direction: column; align-items: center;' }, [
+              h('span', { style: cellStyle }, displayValue),
+              (isGoldenCross || isWeakening) ? h('span', {
+                style: 'font-size: 10px; color: #ec4899; margin-top: 2px;'
+              }, isGoldenCross ? '金叉' : '减弱') : null
+            ])
             
             return h(
               NTooltip,
               { placement: 'top' },
               {
-                trigger: () => h('span', { style: cellStyle }, displayValue),
+                trigger: () => content,
                 default: () => tooltipValue
               }
             )
