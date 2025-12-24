@@ -326,12 +326,6 @@ function initBinanceWebSocket() {
           const closePrice = parseFloat(klineData.c) // 收盘价
           const openTime = klineData.t // 开盘时间（毫秒时间戳）
           
-          console.log(`[MACD] 收到${symbol}完成K线:`, {
-            time: new Date(openTime).toLocaleString('zh-CN'),
-            close: closePrice,
-            klineCount: binanceKlineData.value.get(symbol)?.length || 0
-          })
-          
           if (!binanceKlineData.value.has(symbol)) {
             binanceKlineData.value.set(symbol, [])
           }
@@ -343,7 +337,6 @@ function initBinanceWebSocket() {
           if (existingIndex !== -1) {
             // 更新现有K线
             klines[existingIndex].close = closePrice
-            console.log(`[MACD] 更新${symbol}已有K线，索引: ${existingIndex}`)
           } else {
             // 添加新K线
             klines.push({
@@ -355,8 +348,6 @@ function initBinanceWebSocket() {
             if (klines.length > 50) {
               klines.shift()
             }
-            
-            console.log(`[MACD] 添加${symbol}新K线，当前K线数量: ${klines.length}`)
           }
           
           // 当有足够数据时，计算MACD
@@ -380,28 +371,13 @@ function initBinanceWebSocket() {
                 }
                 const coinCache = macdDataCache.value.get(coin)
                 coinCache.set(timestamp, macdResult)
-                
-                console.log(`[MACD] ${coin}(${symbol}) MACD计算完成:`, {
-                  timestamp,
-                  macd: macdResult.macd?.toFixed(6),
-                  signal: macdResult.signal?.toFixed(6),
-                  histogram: macdResult.histogram?.toFixed(6),
-                  isDown: macdResult.histogram < 0 || (macdResult.macd < (macdResult.signal || 0)),
-                  klineCount: klines.length
-                })
-              } else {
-                console.warn(`[MACD] 未找到${symbol}对应的币种`)
               }
-            } else {
-              console.warn(`[MACD] ${symbol} MACD计算失败，K线数量: ${klines.length}`)
             }
-          } else {
-            console.log(`[MACD] ${symbol} K线数据不足，当前: ${klines.length}/34`)
           }
         }
       }
     } catch (error) {
-      console.error('[MACD] 处理币安WebSocket消息失败:', error)
+      // 静默处理错误
     }
   }
   
@@ -453,7 +429,13 @@ function initBinanceWebSocket5m() {
   binanceWS5m = new WebSocket(wsUrl)
   
   binanceWS5m.onopen = () => {
-    console.log('✅ 币安5分钟K线WebSocket连接成功')
+    console.log('✅ 币安5分钟K线WebSocket连接成功', {
+      url: wsUrl,
+      subscribedSymbols: Array.from(symbols),
+      streamCount: streams.split('/').length
+    })
+    // 记录订阅信息
+    binanceWSSubscriptions5m.value = new Set(symbols)
   }
   
   binanceWS5m.onmessage = (event) => {
@@ -519,33 +501,69 @@ function initBinanceWebSocket5m() {
                   macdDataCache5m.value.set(coin, new Map())
                 }
                 const coinCache = macdDataCache5m.value.get(coin)
-                coinCache.set(timestamp, macdResult)
                 
-                console.log(`[MACD 5m] ${coin}(${symbol}) 5分钟MACD计算完成:`, {
-                  timestamp,
-                  macd: macdResult.macd?.toFixed(6),
-                  signal: macdResult.signal?.toFixed(6),
-                  histogram: macdResult.histogram?.toFixed(6)
-                })
+                // 5分钟K线的时间戳可能不精确匹配表格时间戳
+                // 我们需要找到最接近的表格时间戳，或者使用5分钟K线的实际时间戳
+                // 表格时间戳格式：K14:23:45（有字母前缀，秒不一定是00）
+                // 5分钟K线时间戳：14:20:00, 14:25:00等（5分钟整数倍）
+                // 尝试找到表格中对应的5分钟时间戳
+                const tableTimestamp = findMatchingTableTimestamp(timestamp, coin)
+                
+                if (tableTimestamp) {
+                  coinCache.set(tableTimestamp, macdResult)
+                  console.log(`[MACD 5m] ${coin}(${symbol}) 5分钟MACD计算完成（存储到匹配时间戳）:`, {
+                    binanceTimestamp: timestamp,
+                    tableTimestamp,
+                    macd: macdResult.macd?.toFixed(6),
+                    signal: macdResult.signal?.toFixed(6),
+                    histogram: macdResult.histogram?.toFixed(6),
+                    cacheSize: coinCache.size,
+                    allCachedTimestamps: Array.from(coinCache.keys()),
+                    timeColumnsSample: timeColumns.value.slice(-10)
+                  })
+                } else {
+                  // 如果找不到匹配的时间戳，直接使用计算出的时间戳
+                  coinCache.set(timestamp, macdResult)
+                  console.log(`[MACD 5m] ${coin}(${symbol}) 5分钟MACD计算完成（未找到匹配时间戳，存储到币安时间戳）:`, {
+                    timestamp,
+                    macd: macdResult.macd?.toFixed(6),
+                    signal: macdResult.signal?.toFixed(6),
+                    histogram: macdResult.histogram?.toFixed(6),
+                    cacheSize: coinCache.size,
+                    allCachedTimestamps: Array.from(coinCache.keys()),
+                    timeColumnsSample: timeColumns.value.slice(-10),
+                    note: '数据存储在币安时间戳下，查找时需要遍历缓存'
+                  })
+                }
               }
             }
           }
         }
       }
     } catch (error) {
-      console.error('[MACD 5m] 处理币安WebSocket消息失败:', error)
+      console.error('[MACD 5m] 处理币安WebSocket消息失败:', error, {
+        eventData: event.data
+      })
     }
   }
   
   binanceWS5m.onerror = (error) => {
-    console.error('币安5分钟K线WebSocket错误:', error)
+    console.error('币安5分钟K线WebSocket错误:', error, {
+      readyState: binanceWS5m?.readyState,
+      url: wsUrl
+    })
   }
   
-  binanceWS5m.onclose = () => {
-    console.log('币安5分钟K线WebSocket连接关闭')
+  binanceWS5m.onclose = (event) => {
+    console.log('币安5分钟K线WebSocket连接关闭', {
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean
+    })
     // 5秒后重连
     setTimeout(() => {
       if (internalCoins.value.length > 0) {
+        console.log('[MACD 5m] 尝试重新连接5分钟K线WebSocket...')
         initBinanceWebSocket5m()
       }
     }, 5000)
@@ -566,14 +584,54 @@ function formatTimestampFromBinance(binanceTimestamp) {
   return `${hh}:${mm}:${ss}`
 }
 
+// 查找匹配的表格时间戳（用于5分钟MACD数据）
+// 5分钟K线的时间戳是5分钟的整数倍（如14:20:00），但表格时间戳可能是任意秒数（如K14:23:45）
+// 我们需要找到表格中对应的5分钟时间戳
+function findMatchingTableTimestamp(binanceTimestamp, coin) {
+  // binanceTimestamp格式：HH:mm:ss（如"14:20:00"）
+  // 表格时间戳格式：KHH:mm:ss（如"K14:23:45"）
+  
+  // 提取时间部分（去掉可能的字母前缀）
+  const timePart = binanceTimestamp.replace(/^[A-Z]/, '')
+  const [hh, mm, ss] = timePart.split(':').map(Number)
+  
+  // 5分钟K线的时间戳秒数应该是00
+  // 但表格时间戳的秒数可能是任意值
+  // 我们需要找到表格中时间最接近的时间戳（在同一个5分钟区间内）
+  
+  // 查找表格中所有时间戳，找到在同一个5分钟区间内的
+  const matchingTimestamps = timeColumns.value.filter(ts => {
+    const tsTimePart = ts.replace(/^[A-Z]/, '')
+    const [tsHh, tsMm, tsSs] = tsTimePart.split(':').map(Number)
+    
+    // 检查是否在同一个5分钟区间内（小时和分钟相同，秒数忽略）
+    return tsHh === hh && tsMm === mm
+  })
+  
+  if (matchingTimestamps.length > 0) {
+    // 返回最接近的时间戳（按秒数差值）
+    const sorted = matchingTimestamps.sort((a, b) => {
+      const aTimePart = a.replace(/^[A-Z]/, '')
+      const bTimePart = b.replace(/^[A-Z]/, '')
+      const [aHh, aMm, aSs] = aTimePart.split(':').map(Number)
+      const [bHh, bMm, bSs] = bTimePart.split(':').map(Number)
+      const aDiff = Math.abs(aSs - ss)
+      const bDiff = Math.abs(bSs - ss)
+      return aDiff - bDiff
+    })
+    
+    return sorted[0]
+  }
+  
+  return null
+}
+
 // 批量获取历史K线数据（逐个请求，避免并发过多）
 async function fetchHistoricalKlines() {
   const coins = internalCoins.value
   if (coins.length === 0) {
     return
   }
-  
-  console.log(`[MACD历史K线] 开始批量获取${coins.length}个币种的历史K线数据`)
   
   // 逐个请求，每个请求间隔100ms，避免并发过多
   for (let i = 0; i < coins.length; i++) {
@@ -584,32 +642,21 @@ async function fetchHistoricalKlines() {
       // 如果已经有足够的K线数据，跳过
       const existingKlines = binanceKlineData.value.get(symbol)
       if (existingKlines && existingKlines.length >= 50) {
-        console.log(`[MACD历史K线] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
         continue
       }
       
       // 通过后端代理获取币安历史K线数据（获取最近50根）
       const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
       
-      console.log(`[MACD历史K线] 请求${symbol}的历史K线数据 (${i + 1}/${coins.length})`, endpoint)
-      
       const response = await axios.get(endpoint)
-      console.log(`[MACD历史K线] ${symbol} API响应:`, {
-        status: response.status,
-        dataType: typeof response.data,
-        isArray: Array.isArray(response.data),
-        dataLength: Array.isArray(response.data) ? response.data.length : (response.data?.data?.length || 0)
-      })
       
       const klines = response.data?.data || response.data || []
       
       if (!Array.isArray(klines)) {
-        console.error(`[MACD历史K线] ${symbol} API返回数据格式错误，不是数组:`, response.data)
         continue
       }
       
       if (klines.length === 0) {
-        console.warn(`[MACD历史K线] ${symbol} API返回空数组`)
         continue
       }
       
@@ -633,8 +680,6 @@ async function fetchHistoricalKlines() {
           // 更新或设置K线数据
           binanceKlineData.value.set(symbol, klineData)
           
-          console.log(`[MACD历史K线] ${symbol} 获取成功: ${klineData.length}根K线`)
-          
           // 如果有足够数据，立即计算MACD
           if (klineData.length >= 34) {
             const closes = klineData.map(k => k.close)
@@ -650,13 +695,6 @@ async function fetchHistoricalKlines() {
               }
               const coinCache = macdDataCache.value.get(coin)
               coinCache.set(timestamp, macdResult)
-              
-              console.log(`[MACD历史K线] ${coin}(${symbol}) MACD计算完成:`, {
-                timestamp,
-                macd: macdResult.macd?.toFixed(6),
-                signal: macdResult.signal?.toFixed(6),
-                histogram: macdResult.histogram?.toFixed(6)
-              })
             }
           }
         }
@@ -667,17 +705,100 @@ async function fetchHistoricalKlines() {
         await new Promise(resolve => setTimeout(resolve, 100))
       }
     } catch (error) {
-      console.error(`[MACD历史K线] 获取${symbol}历史K线失败:`, {
+      // 继续处理下一个币种
+    }
+  }
+}
+
+// 批量获取5分钟历史K线数据（逐个请求，避免并发过多）
+async function fetchHistoricalKlines5m() {
+  const coins = internalCoins.value
+  if (coins.length === 0) {
+    return
+  }
+  
+  console.log(`[MACD历史K线 5m] 开始批量获取${coins.length}个币种的5分钟历史K线数据`)
+  
+  // 逐个请求，每个请求间隔100ms，避免并发过多
+  for (let i = 0; i < coins.length; i++) {
+    const coin = coins[i]
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    
+    try {
+      // 如果已经有足够的K线数据，跳过
+      const existingKlines = binanceKlineData5m.value.get(symbol)
+      if (existingKlines && existingKlines.length >= 50) {
+        console.log(`[MACD历史K线 5m] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
+        continue
+      }
+      
+      // 通过后端代理获取币安历史K线数据（获取最近50根5分钟K线）
+      const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=5m&limit=50`
+      
+      console.log(`[MACD历史K线 5m] 请求${symbol}的5分钟历史K线数据 (${i + 1}/${coins.length})`, endpoint)
+      
+      const response = await axios.get(endpoint)
+      console.log(`[MACD历史K线 5m] ${symbol} API响应:`, {
+        status: response.status,
+        dataType: typeof response.data,
+        isArray: Array.isArray(response.data),
+        dataLength: Array.isArray(response.data) ? response.data.length : (response.data?.data?.length || 0)
+      })
+      
+      const klines = response.data?.data || response.data || []
+      
+      if (!Array.isArray(klines)) {
+        console.error(`[MACD历史K线 5m] ${symbol} API返回数据格式错误，不是数组:`, response.data)
+        continue
+      }
+      
+      if (klines.length === 0) {
+        console.warn(`[MACD历史K线 5m] ${symbol} API返回空数组`)
+        continue
+      }
+      
+      if (klines.length > 0) {
+        // 币安K线格式：[开盘时间, 开盘价, 最高价, 最低价, 收盘价, ...]
+        // 收盘价在索引4
+        const klineData = klines.map(k => {
+          if (Array.isArray(k) && k.length >= 5) {
+            return {
+              time: k[0], // 开盘时间（毫秒时间戳）
+              close: parseFloat(k[4]) // 收盘价
+            }
+          }
+          return null
+        }).filter(k => k !== null && k.close > 0)
+        
+        if (klineData.length > 0) {
+          // 按时间排序（从旧到新）
+          klineData.sort((a, b) => a.time - b.time)
+          
+          // 更新或设置K线数据
+          binanceKlineData5m.value.set(symbol, klineData)
+          
+          console.log(`[MACD历史K线 5m] ${symbol} 获取成功: ${klineData.length}根K线`)
+          // 注意：历史K线数据只用来准备K线数据，不计算MACD
+          // MACD只在WebSocket实时收到K线收线消息时才计算
+        }
+      }
+      
+      // 每个请求间隔100ms，避免并发过多
+      if (i < coins.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    } catch (error) {
+      console.error(`[MACD历史K线 5m] 获取${symbol}历史K线失败:`, {
         message: error.message,
         response: error.response?.data,
         status: error.response?.status,
-        endpoint: `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
+        endpoint: `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=5m&limit=50`
       })
       // 继续处理下一个币种
     }
   }
   
-  console.log(`[MACD历史K线] 批量获取完成`)
+  console.log(`[MACD历史K线 5m] 批量获取完成`)
 }
 
 // 获取单个币种的历史K线数据
@@ -688,32 +809,21 @@ async function fetchHistoricalKlinesForCoin(coin) {
     // 如果已经有足够的K线数据，跳过
     const existingKlines = binanceKlineData.value.get(symbol)
     if (existingKlines && existingKlines.length >= 50) {
-      console.log(`[MACD历史K线] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
       return
     }
     
     // 通过后端代理获取币安历史K线数据（获取最近50根）
     const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
     
-    console.log(`[MACD历史K线] 请求${symbol}的历史K线数据`, endpoint)
-    
     const response = await axios.get(endpoint)
-    console.log(`[MACD历史K线] ${symbol} API响应:`, {
-      status: response.status,
-      dataType: typeof response.data,
-      isArray: Array.isArray(response.data),
-      dataLength: Array.isArray(response.data) ? response.data.length : (response.data?.data?.length || 0)
-    })
     
     const klines = response.data?.data || response.data || []
     
     if (!Array.isArray(klines)) {
-      console.error(`[MACD历史K线] ${symbol} API返回数据格式错误，不是数组:`, response.data)
       return
     }
     
     if (klines.length === 0) {
-      console.warn(`[MACD历史K线] ${symbol} API返回空数组`)
       return
     }
     
@@ -736,8 +846,6 @@ async function fetchHistoricalKlinesForCoin(coin) {
       // 更新或设置K线数据
       binanceKlineData.value.set(symbol, klineData)
       
-      console.log(`[MACD历史K线] ${symbol} 获取成功: ${klineData.length}根K线`)
-      
       // 如果有足够数据，立即计算MACD
       if (klineData.length >= 34) {
         const closes = klineData.map(k => k.close)
@@ -753,23 +861,60 @@ async function fetchHistoricalKlinesForCoin(coin) {
           }
           const coinCache = macdDataCache.value.get(coin)
           coinCache.set(timestamp, macdResult)
-          
-          console.log(`[MACD历史K线] ${coin}(${symbol}) MACD计算完成:`, {
-            timestamp,
-            macd: macdResult.macd?.toFixed(6),
-            signal: macdResult.signal?.toFixed(6),
-            histogram: macdResult.histogram?.toFixed(6)
-          })
         }
       }
     }
   } catch (error) {
-    console.error(`[MACD历史K线] 获取${symbol}历史K线失败:`, {
-      message: error.message,
-      response: error.response?.data,
-      status: error.response?.status,
-      endpoint: `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=1m&limit=50`
-    })
+    // 静默处理错误
+  }
+}
+
+// 获取单个币种的5分钟历史K线数据
+async function fetchHistoricalKlinesForCoin5m(coin) {
+  const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+  
+  try {
+    // 如果已经有足够的K线数据，跳过
+    const existingKlines = binanceKlineData5m.value.get(symbol)
+    if (existingKlines && existingKlines.length >= 50) {
+      console.log(`[MACD历史K线 5m] ${symbol} 已有足够K线数据(${existingKlines.length}根)，跳过`)
+      return
+    }
+    
+    // 通过后端代理获取币安历史K线数据（获取最近50根5分钟K线）
+    const endpoint = `${import.meta.env.VITE_API_BASE}/binance/klines?symbol=${symbol}&interval=5m&limit=50`
+    
+    console.log(`[MACD历史K线 5m] 请求${symbol}的5分钟历史K线数据`, endpoint)
+    
+    const response = await axios.get(endpoint)
+    const klines = response.data?.data || response.data || []
+    
+    if (!Array.isArray(klines) || klines.length === 0) {
+      console.warn(`[MACD历史K线 5m] ${symbol} API返回数据为空或格式错误`)
+      return
+    }
+    
+    // 币安K线格式：[开盘时间, 开盘价, 最高价, 最低价, 收盘价, ...]
+    const klineData = klines.map(k => {
+      if (Array.isArray(k) && k.length >= 5) {
+        return {
+          time: k[0],
+          close: parseFloat(k[4])
+        }
+      }
+      return null
+    }).filter(k => k !== null && k.close > 0)
+    
+    if (klineData.length > 0) {
+      klineData.sort((a, b) => a.time - b.time)
+      binanceKlineData5m.value.set(symbol, klineData)
+      
+      console.log(`[MACD历史K线 5m] ${symbol} 获取成功: ${klineData.length}根K线`)
+      // 注意：历史K线数据只用来准备K线数据，不计算MACD
+      // MACD只在WebSocket实时收到K线收线消息时才计算
+    }
+  } catch (error) {
+    console.error(`[MACD历史K线 5m] 获取${symbol}历史K线失败:`, error)
   }
 }
 
@@ -791,8 +936,43 @@ function updateBinanceWebSocketSubscriptions() {
   const needsResubscribe = Array.from(currentSymbols).some(s => !binanceWSSubscriptions.value.has(s))
   
   if (needsResubscribe) {
+    // 需要重新订阅时，先关闭旧连接，然后重新初始化
+    if (binanceWS) {
+      try {
+        binanceWS.close()
+      } catch (e) {}
+    }
     // 重新初始化连接以订阅新币种
     initBinanceWebSocket()
+  }
+}
+
+// 更新币安5分钟K线WebSocket订阅（当币种列表变化时）
+function updateBinanceWebSocketSubscriptions5m() {
+  if (!binanceWS5m || binanceWS5m.readyState !== WebSocket.OPEN) {
+    initBinanceWebSocket5m()
+    return
+  }
+  
+  // 获取当前所有币种
+  const currentSymbols = new Set()
+  internalCoins.value.forEach(coin => {
+    const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
+    currentSymbols.add(symbol.toLowerCase())
+  })
+  
+  // 检查是否需要重新订阅
+  const needsResubscribe = Array.from(currentSymbols).some(s => !binanceWSSubscriptions5m.value.has(s))
+  
+  if (needsResubscribe) {
+    // 需要重新订阅时，先关闭旧连接，然后重新初始化
+    if (binanceWS5m) {
+      try {
+        binanceWS5m.close()
+      } catch (e) {}
+    }
+    // 重新初始化连接以订阅新币种
+    initBinanceWebSocket5m()
   }
 }
 
@@ -1392,7 +1572,6 @@ function calculateEMA(prices, period) {
 // 计算MACD指标
 function calculateMACD(prices) {
   if (!Array.isArray(prices) || prices.length < 26) {
-    console.log(`[MACD计算] 价格数据不足: ${prices?.length || 0}/26`)
     return null
   }
   
@@ -1400,7 +1579,6 @@ function calculateMACD(prices) {
   const ema26 = calculateEMA(prices, 26)
   
   if (!ema12 || !ema26) {
-    console.log(`[MACD计算] EMA计算失败: ema12=${ema12}, ema26=${ema26}`)
     return null
   }
   
@@ -1409,7 +1587,6 @@ function calculateMACD(prices) {
   // 计算信号线（MACD的9日EMA）
   // 需要至少26+9-1=34个数据点来计算信号线
   if (prices.length < 34) {
-    console.log(`[MACD计算] 数据不足计算信号线: ${prices.length}/34，返回基础MACD`)
     return { macd: macdLine, signal: null, histogram: macdLine }
   }
   
@@ -1425,70 +1602,49 @@ function calculateMACD(prices) {
   }
   
   if (macdValues.length < 9) {
-    console.log(`[MACD计算] MACD历史值不足: ${macdValues.length}/9`)
     return { macd: macdLine, signal: null, histogram: macdLine }
   }
   
   const signalLine = calculateEMA(macdValues, 9)
   const histogram = macdLine - (signalLine || 0)
   
-  console.log(`[MACD计算] 计算完成:`, {
-    priceCount: prices.length,
-    ema12: ema12.toFixed(6),
-    ema26: ema26.toFixed(6),
-    macd: macdLine.toFixed(6),
-    signal: signalLine?.toFixed(6),
-    histogram: histogram.toFixed(6)
-  })
-  
   return { macd: macdLine, signal: signalLine, histogram }
 }
 
 // 获取币种的MACD数据（从WebSocket缓存中获取）
 function fetchAndCacheMACDData(coin, timestamp) {
-  console.log(`[MACD获取] 请求${coin}@${timestamp}的MACD数据`)
-  
   if (!macdDataCache.value.has(coin)) {
     macdDataCache.value.set(coin, new Map())
   }
   
   const coinCache = macdDataCache.value.get(coin)
   if (coinCache.has(timestamp)) {
-    const cached = coinCache.get(timestamp)
-    console.log(`[MACD获取] ${coin}@${timestamp} 使用缓存数据:`, {
-      macd: cached.macd?.toFixed(6),
-      signal: cached.signal?.toFixed(6),
-      histogram: cached.histogram?.toFixed(6)
-    })
-    return cached
+    return coinCache.get(timestamp)
   }
   
   // 从WebSocket缓存中获取K线数据
   const symbol = coin.endsWith('USDT') ? coin : `${coin}USDT`
   const klines = binanceKlineData.value.get(symbol)
   
-  console.log(`[MACD获取] ${coin}(${symbol}) K线缓存状态:`, {
-    hasKlines: !!klines,
-    klineCount: klines?.length || 0,
-    allSymbols: Array.from(binanceKlineData.value.keys())
-  })
-  
   if (!klines || klines.length < 34) {
-    console.warn(`[MACD获取] ${coin}(${symbol}) K线数据不足: ${klines?.length || 0}/34`)
     // 如果K线数据不足，尝试重新获取历史K线（只针对这个币种）
-    console.log(`[MACD获取] ${coin}(${symbol}) 尝试重新获取历史K线数据`)
     // 异步获取，不阻塞当前流程
-    fetchHistoricalKlinesForCoin(coin).catch(err => {
-      console.error(`[MACD获取] ${coin}(${symbol}) 重新获取历史K线失败:`, err)
-    })
+    fetchHistoricalKlinesForCoin(coin).catch(() => {})
     return null
+  }
+  
+  // 检查5分钟K线数据是否充足（用于5分钟MACD）
+  const klines5m = binanceKlineData5m.value.get(symbol)
+  if (!klines5m || klines5m.length < 34) {
+    // 如果5分钟K线数据不足，尝试重新获取历史K线（只针对这个币种）
+    // 异步获取，不阻塞当前流程
+    fetchHistoricalKlinesForCoin5m(coin).catch(() => {})
   }
   
   // 提取收盘价
   const closes = klines.map(k => k.close).filter(p => p > 0)
   
   if (closes.length < 34) {
-    console.log(`[MACD获取] ${coin}(${symbol}) 有效收盘价不足: ${closes.length}/34`)
     return null
   }
   
@@ -1497,11 +1653,9 @@ function fetchAndCacheMACDData(coin, timestamp) {
   
   if (macdResult) {
     coinCache.set(timestamp, macdResult)
-    console.log(`[MACD获取] ${coin}@${timestamp} MACD计算并缓存成功`)
     return macdResult
   }
   
-  console.log(`[MACD获取] ${coin}@${timestamp} MACD计算失败`)
   return null
 }
 
@@ -1568,7 +1722,6 @@ function checkMACDGoldenCross(coin, timestamp, isLatestTimestamp = false) {
       macdData.signal === null || macdData.signal === undefined) {
     // 如果是最新时间戳且没有MACD数据，说明K线还未收线，不判断金叉
     if (isLatestTimestamp) {
-      console.log(`[MACD金叉] ${coin}@${timestamp} 跳过判断：最新时间戳但K线未收线（无MACD数据）`)
       return false
     }
     // 如果不是最新时间戳但没有MACD数据，也返回false
@@ -1589,16 +1742,6 @@ function checkMACDGoldenCross(coin, timestamp, isLatestTimestamp = false) {
   const currentIsAbove = macdData.macd >= macdData.signal
   const isGoldenCross = prevIsBelow && currentIsAbove
   
-  if (isGoldenCross) {
-    console.log(`[MACD金叉] ${coin}@${timestamp}:`, {
-      isLatestTimestamp,
-      prevMacd: prevMacdData.macd?.toFixed(6),
-      prevSignal: prevMacdData.signal?.toFixed(6),
-      currentMacd: macdData.macd?.toFixed(6),
-      currentSignal: macdData.signal?.toFixed(6)
-    })
-  }
-  
   return isGoldenCross
 }
 
@@ -1617,11 +1760,130 @@ function checkMACDGoldenCross5m(coin, timestamp, isLatestTimestamp = false) {
     return false
   }
   
+  // 根据表格时间戳找到对应的5分钟整数倍时间戳
+  // 5分钟K线以开线时间为准，例如：
+  // - 10:10:00-10:14:59 的K线，在 10:15:00 收线，MACD存储在 10:10:00
+  // - 表格时间戳 10:15:13 应该找 10:10:00 的MACD（前一个5分钟区间）
+  const timePart = timestamp.replace(/^[A-Z]/, '')
+  const [hh, mm, ss] = timePart.split(':').map(Number)
+  
+  // 向下取整到5分钟整数倍，然后减去5分钟（因为要找前一个已收线的K线）
+  const fiveMinuteFloor = Math.floor(mm / 5) * 5
+  const prevFiveMinuteFloor = fiveMinuteFloor - 5
+  let prevHh = hh
+  let prevMm = prevFiveMinuteFloor
+  if (prevMm < 0) {
+    prevMm = 60 + prevMm
+    prevHh = prevHh - 1
+    if (prevHh < 0) {
+      prevHh = 24 + prevHh
+    }
+  }
+  const fiveMinuteTimestamp = `${String(prevHh).padStart(2, '0')}:${String(prevMm).padStart(2, '0')}:00`
+  
+  // 查找匹配的表格时间戳（MACD数据可能存储在匹配的表格时间戳下）
+  const matchingTimestamp = findMatchingTableTimestamp(fiveMinuteTimestamp, coin) || timestamp
+  
+  console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 开始查找MACD数据`, {
+    tableTimestamp: timestamp,
+    timePart,
+    hh,
+    mm,
+    ss,
+    currentFiveMinuteFloor: Math.floor(mm / 5) * 5,
+    prevFiveMinuteTimestamp: fiveMinuteTimestamp,
+    matchingTimestamp,
+    cacheSize: coinCache.size,
+    allCachedTimestamps: Array.from(coinCache.keys()),
+    note: '查找前一个5分钟区间的MACD（因为K线以开线时间为准）'
+  })
+  
   // 如果是最新时间戳，需要确保MACD数据存在（确保K线已收线）
-  const macdData = coinCache.get(timestamp)
+  // WebSocket只在K线收线时（x: true）才计算MACD，所以如果没有MACD数据，说明K线还未收线
+  // 首先尝试从匹配的表格时间戳或5分钟时间戳查找
+  let macdData = coinCache.get(matchingTimestamp)
+  if (macdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 从matchingTimestamp找到数据:`, matchingTimestamp)
+  } else {
+    macdData = coinCache.get(fiveMinuteTimestamp)
+    if (macdData) {
+      console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 从fiveMinuteTimestamp找到数据:`, fiveMinuteTimestamp)
+    }
+  }
+  
+  // 如果还是找不到，遍历缓存中所有时间戳，找到前一个5分钟区间内的数据
+  // 这是因为MACD数据可能在K线收线时存储到"12:05:00"下，但表格时间戳是"V12:10:14"
+  if (!macdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 开始遍历缓存查找（前一个5分钟区间: ${prevHh}:${prevMm}）`)
+    let foundInLoop = false
+    for (const [cachedTimestamp, cachedData] of coinCache.entries()) {
+      const cachedTimePart = cachedTimestamp.replace(/^[A-Z]/, '')
+      const [cachedHh, cachedMm] = cachedTimePart.split(':').map(Number)
+      const cachedFiveMinuteFloor = Math.floor(cachedMm / 5) * 5
+      // 检查是否在前一个5分钟区间内
+      if (cachedHh === prevHh && cachedFiveMinuteFloor === prevMm) {
+        macdData = cachedData
+        foundInLoop = true
+        console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 在遍历中找到匹配的时间戳:`, {
+          cachedTimestamp,
+          cachedTimePart,
+          cachedHh,
+          cachedMm,
+          cachedFiveMinuteFloor,
+          targetPrevFiveMinuteFloor: prevMm
+        })
+        break
+      }
+    }
+    if (!foundInLoop) {
+      console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 遍历缓存未找到匹配数据，已检查的时间戳:`, Array.from(coinCache.keys()))
+    }
+  }
+  
+  if (macdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 成功找到MACD数据:`, {
+      macd: macdData.macd?.toFixed(6),
+      signal: macdData.signal?.toFixed(6),
+      histogram: macdData.histogram?.toFixed(6),
+      hasMacd: macdData.macd !== null && macdData.macd !== undefined,
+      hasSignal: macdData.signal !== null && macdData.signal !== undefined
+    })
+  }
+  
   if (!macdData || macdData.macd === null || macdData.macd === undefined || 
       macdData.signal === null || macdData.signal === undefined) {
+    // 如果是最新时间戳且没有MACD数据，说明K线还未收线，不判断金叉
     if (isLatestTimestamp) {
+      // 计算剩余收线时间
+      const now = new Date()
+      const currentMinute = now.getMinutes()
+      const currentSecond = now.getSeconds()
+      const currentMillisecond = now.getMilliseconds()
+      
+      // 计算下一个5分钟整数倍的时间
+      const next5Minute = Math.ceil((currentMinute + 1) / 5) * 5
+      const next5MinuteNormalized = next5Minute >= 60 ? next5Minute - 60 : next5Minute
+      
+      let remainingMinutes = next5MinuteNormalized - currentMinute
+      if (remainingMinutes <= 0) {
+        remainingMinutes = 5 - currentMinute % 5
+      }
+      
+      const remainingTotalSeconds = remainingMinutes * 60 - currentSecond
+      const remainingMs = remainingTotalSeconds * 1000 - currentMillisecond
+      
+      const displayMinutes = Math.floor(remainingMs / 60000)
+      const displaySeconds = Math.floor((remainingMs % 60000) / 1000)
+      
+      console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 跳过判断：最新时间戳但K线未收线（无MACD数据）`, {
+        currentTime: now.toLocaleTimeString('zh-CN'),
+        tableTimestamp: timestamp,
+        fiveMinuteTimestamp,
+        matchingTimestamp,
+        availableTimestamps: Array.from(coinCache.keys()).slice(-5),
+        remainingTime: `${displayMinutes}分${displaySeconds}秒`,
+        remainingMs: Math.round(remainingMs)
+      })
       return false
     }
     return false
@@ -1629,10 +1891,86 @@ function checkMACDGoldenCross5m(coin, timestamp, isLatestTimestamp = false) {
   
   // 获取前一个时间戳的MACD数据
   const prevTimestamp = timeColumns.value[currentIndex - 1]
-  const prevMacdData = coinCache.get(prevTimestamp)
+  const prevTimePart = prevTimestamp.replace(/^[A-Z]/, '')
+  const [prevTableHh, prevTableMm] = prevTimePart.split(':').map(Number)
+  const prevTableFiveMinuteFloor = Math.floor(prevTableMm / 5) * 5
+  // 前一个时间戳也要找前一个5分钟区间的MACD
+  const prevPrevFiveMinuteFloor = prevTableFiveMinuteFloor - 5
+  let prevPrevHh = prevTableHh
+  let prevPrevMm = prevPrevFiveMinuteFloor
+  if (prevPrevMm < 0) {
+    prevPrevMm = 60 + prevPrevMm
+    prevPrevHh = prevPrevHh - 1
+    if (prevPrevHh < 0) {
+      prevPrevHh = 24 + prevPrevHh
+    }
+  }
+  const prevFiveMinuteTimestamp = `${String(prevPrevHh).padStart(2, '0')}:${String(prevPrevMm).padStart(2, '0')}:00`
+  const prevMatchingTimestamp = findMatchingTableTimestamp(prevFiveMinuteTimestamp, coin) || prevTimestamp
+  
+  console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 开始查找前一个时间戳的MACD数据`, {
+    prevTimestamp,
+    prevTimePart,
+    prevTableHh,
+    prevTableMm,
+    prevTableCurrentFiveMinuteFloor: prevTableFiveMinuteFloor,
+    prevFiveMinuteTimestamp,
+    prevMatchingTimestamp,
+    note: '查找前一个时间戳对应的前一个5分钟区间的MACD'
+  })
+  
+  // 首先尝试从匹配的表格时间戳或5分钟时间戳查找
+  let prevMacdData = coinCache.get(prevMatchingTimestamp)
+  if (prevMacdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 从prevMatchingTimestamp找到前一个数据:`, prevMatchingTimestamp)
+  } else {
+    prevMacdData = coinCache.get(prevFiveMinuteTimestamp)
+    if (prevMacdData) {
+      console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 从prevFiveMinuteTimestamp找到前一个数据:`, prevFiveMinuteTimestamp)
+    }
+  }
+  
+  // 如果还是找不到，遍历缓存中所有时间戳，找到同一5分钟区间内的数据
+  if (!prevMacdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 开始遍历缓存查找前一个时间戳（前一个5分钟区间: ${prevPrevHh}:${prevPrevMm}）`)
+    let foundInLoop = false
+    for (const [cachedTimestamp, cachedData] of coinCache.entries()) {
+      const cachedTimePart = cachedTimestamp.replace(/^[A-Z]/, '')
+      const [cachedHh, cachedMm] = cachedTimePart.split(':').map(Number)
+      const cachedFiveMinuteFloor = Math.floor(cachedMm / 5) * 5
+      // 检查是否在前一个5分钟区间内
+      if (cachedHh === prevPrevHh && cachedFiveMinuteFloor === prevPrevMm) {
+        prevMacdData = cachedData
+        foundInLoop = true
+        console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 在遍历中找到匹配的前一个时间戳:`, {
+          cachedTimestamp,
+          cachedTimePart,
+          cachedHh,
+          cachedMm,
+          cachedFiveMinuteFloor,
+          targetPrevPrevFiveMinuteFloor: prevPrevMm
+        })
+        break
+      }
+    }
+    if (!foundInLoop) {
+      console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 遍历缓存未找到匹配的前一个数据，已检查的时间戳:`, Array.from(coinCache.keys()))
+    }
+  }
+  
+  if (prevMacdData) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 成功找到前一个时间戳的MACD数据:`, {
+      prevMacd: prevMacdData.macd?.toFixed(6),
+      prevSignal: prevMacdData.signal?.toFixed(6),
+      prevHistogram: prevMacdData.histogram?.toFixed(6),
+      hasMacd: prevMacdData.macd !== null && prevMacdData.macd !== undefined,
+      hasSignal: prevMacdData.signal !== null && prevMacdData.signal !== undefined
+    })
+  }
   
   if (!prevMacdData || prevMacdData.macd === null || prevMacdData.macd === undefined ||
       prevMacdData.signal === null || prevMacdData.signal === undefined) {
+    console.log(`[MACD 5m 金叉] ${coin}@${timestamp} 前一个时间戳的MACD数据无效或缺失`)
     return false
   }
   
@@ -1644,6 +1982,12 @@ function checkMACDGoldenCross5m(coin, timestamp, isLatestTimestamp = false) {
   if (isGoldenCross) {
     console.log(`[MACD 5m 金叉] ${coin}@${timestamp}:`, {
       isLatestTimestamp,
+      tableTimestamp: timestamp,
+      fiveMinuteTimestamp,
+      matchingTimestamp,
+      prevTimestamp,
+      prevFiveMinuteTimestamp,
+      prevMatchingTimestamp,
       prevMacd: prevMacdData.macd?.toFixed(6),
       prevSignal: prevMacdData.signal?.toFixed(6),
       currentMacd: macdData.macd?.toFixed(6),
@@ -1652,6 +1996,106 @@ function checkMACDGoldenCross5m(coin, timestamp, isLatestTimestamp = false) {
   }
   
   return isGoldenCross
+}
+
+// 检查是否可能出现5分钟MACD金叉（用于显示黑点提示）
+// 可能出现金叉的条件：当前和前一个时间戳都有5分钟MACD数据，且跨越5分钟边界
+function checkPossibleGoldenCross5m(coin, timestamp) {
+  if (!macdDataCache5m.value.has(coin)) {
+    return false
+  }
+  
+  const coinCache = macdDataCache5m.value.get(coin)
+  const currentIndex = timeColumns.value.indexOf(timestamp)
+  
+  if (currentIndex <= 0) {
+    return false
+  }
+  
+  // 根据表格时间戳找到对应的5分钟整数倍时间戳
+  // 5分钟K线以开线时间为准，要找前一个5分钟区间的MACD
+  const timePart = timestamp.replace(/^[A-Z]/, '')
+  const [hh, mm] = timePart.split(':').map(Number)
+  const fiveMinuteFloor = Math.floor(mm / 5) * 5
+  const prevFiveMinuteFloor = fiveMinuteFloor - 5
+  let prevHh = hh
+  let prevMm = prevFiveMinuteFloor
+  if (prevMm < 0) {
+    prevMm = 60 + prevMm
+    prevHh = prevHh - 1
+    if (prevHh < 0) {
+      prevHh = 24 + prevHh
+    }
+  }
+  const fiveMinuteTimestamp = `${String(prevHh).padStart(2, '0')}:${String(prevMm).padStart(2, '0')}:00`
+  const matchingTimestamp = findMatchingTableTimestamp(fiveMinuteTimestamp, coin) || timestamp
+  
+  // 首先尝试从匹配的表格时间戳或5分钟时间戳查找
+  let macdData = coinCache.get(matchingTimestamp) || coinCache.get(fiveMinuteTimestamp)
+  
+  // 如果还是找不到，遍历缓存中所有时间戳，找到同一5分钟区间内的数据
+  if (!macdData) {
+    for (const [cachedTimestamp, cachedData] of coinCache.entries()) {
+      const cachedTimePart = cachedTimestamp.replace(/^[A-Z]/, '')
+      const [cachedHh, cachedMm] = cachedTimePart.split(':').map(Number)
+      // 检查是否在前一个5分钟区间内
+      if (cachedHh === prevHh && Math.floor(cachedMm / 5) === prevMm) {
+        macdData = cachedData
+        break
+      }
+    }
+  }
+  
+  if (!macdData || macdData.macd === null || macdData.macd === undefined || 
+      macdData.signal === null || macdData.signal === undefined) {
+    return false
+  }
+  
+  // 获取前一个时间戳的MACD数据
+  const prevTimestamp = timeColumns.value[currentIndex - 1]
+  const prevTimePart = prevTimestamp.replace(/^[A-Z]/, '')
+  const [prevTableHh, prevTableMm] = prevTimePart.split(':').map(Number)
+  const prevTableFiveMinuteFloor = Math.floor(prevTableMm / 5) * 5
+  // 前一个时间戳也要找前一个5分钟区间的MACD
+  const prevPrevFiveMinuteFloor = prevTableFiveMinuteFloor - 5
+  let prevPrevHh = prevTableHh
+  let prevPrevMm = prevPrevFiveMinuteFloor
+  if (prevPrevMm < 0) {
+    prevPrevMm = 60 + prevPrevMm
+    prevPrevHh = prevPrevHh - 1
+    if (prevPrevHh < 0) {
+      prevPrevHh = 24 + prevPrevHh
+    }
+  }
+  const prevFiveMinuteTimestamp = `${String(prevPrevHh).padStart(2, '0')}:${String(prevPrevMm).padStart(2, '0')}:00`
+  const prevMatchingTimestamp = findMatchingTableTimestamp(prevFiveMinuteTimestamp, coin) || prevTimestamp
+  
+  // 首先尝试从匹配的表格时间戳或5分钟时间戳查找
+  let prevMacdData = coinCache.get(prevMatchingTimestamp) || coinCache.get(prevFiveMinuteTimestamp)
+  
+  // 如果还是找不到，遍历缓存中所有时间戳，找到前一个5分钟区间内的数据
+  if (!prevMacdData) {
+    for (const [cachedTimestamp, cachedData] of coinCache.entries()) {
+      const cachedTimePart = cachedTimestamp.replace(/^[A-Z]/, '')
+      const [cachedHh, cachedMm] = cachedTimePart.split(':').map(Number)
+      // 检查是否在前一个5分钟区间内
+      if (cachedHh === prevPrevHh && Math.floor(cachedMm / 5) === prevPrevMm) {
+        prevMacdData = cachedData
+        break
+      }
+    }
+  }
+  
+  if (!prevMacdData || prevMacdData.macd === null || prevMacdData.macd === undefined ||
+      prevMacdData.signal === null || prevMacdData.signal === undefined) {
+    return false
+  }
+  
+  // 检查是否跨越5分钟边界（当前和前一个时间戳对应的前一个5分钟整数倍时间戳不同）
+  // 注意：这里比较的是前一个5分钟区间，因为MACD存储在K线开线时间
+  const isCrossingBoundary = fiveMinuteTimestamp !== prevFiveMinuteTimestamp
+  
+  return isCrossingBoundary
 }
 
 // 获取单元格背景色
@@ -2223,6 +2667,16 @@ async function rebuildTableForCoins(newCoins) {
     newTableData.push(row)
   }
   tableData.splice(0, tableData.length, ...newTableData)
+  
+  // 异步获取历史K线数据（不阻塞主流程）
+  fetchHistoricalKlines().catch(err => {
+    console.error('[rebuildTableForCoins] 获取历史K线失败:', err)
+  })
+  
+  // 异步获取5分钟历史K线数据（不阻塞主流程）
+  fetchHistoricalKlines5m().catch(err => {
+    console.error('[rebuildTableForCoins] 获取5分钟历史K线失败:', err)
+  })
 }
 
 // 防抖刷新函数
@@ -2616,6 +3070,25 @@ async function checkServerCoinsSync() {
         }
       }
       
+      // 如果有新增币种，更新WebSocket订阅和获取历史K线数据
+      if (addedCoins.length > 0) {
+        // 更新1分钟K线WebSocket订阅
+        updateBinanceWebSocketSubscriptions()
+        
+        // 更新5分钟K线WebSocket订阅
+        updateBinanceWebSocketSubscriptions5m()
+        
+        // 获取新添加币种的历史K线数据 - 异步执行，不阻塞核心逻辑
+        fetchHistoricalKlines().catch(err => {
+          console.error('[MACD历史K线] 获取失败，不影响核心功能:', err)
+        })
+        
+        // 获取新添加币种的5分钟历史K线数据 - 异步执行，不阻塞核心逻辑
+        fetchHistoricalKlines5m().catch(err => {
+          console.error('[MACD历史K线 5m] 获取失败，不影响核心功能:', err)
+        })
+      }
+      
       // 通知父组件币列表变化
       emit('update:coins', [...internalCoins.value])
     }
@@ -2669,6 +3142,11 @@ async function addCoin(value) {
         // 获取新添加币种的历史K线数据 - 异步执行，不阻塞核心逻辑
         fetchHistoricalKlines().catch(err => {
           console.error('[MACD历史K线] 获取失败，不影响核心功能:', err)
+        })
+        
+        // 获取新添加币种的5分钟历史K线数据 - 异步执行，不阻塞核心逻辑
+        fetchHistoricalKlines5m().catch(err => {
+          console.error('[MACD历史K线 5m] 获取失败，不影响核心功能:', err)
         })
       }
       await refreshTable()
