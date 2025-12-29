@@ -321,6 +321,14 @@
                         >
                           刷新条件单
                         </n-button>
+                        <n-button 
+                          size="small" 
+                          type="error" 
+                          @click="cancelAllAlgoOrders(user)"
+                          class="cancel-all-btn"
+                        >
+                          撤销全部
+                        </n-button>
                       </div>
                     </div>
                     
@@ -394,6 +402,28 @@
                                   <span class="qty-label">客户端ID:</span>
                                   <span class="qty-value">{{ order.clientAlgoId }}</span>
                                 </div>
+                              </div>
+                              
+                              <!-- 撤单按钮 - 下方 -->
+                              <div class="order-actions">
+                                <n-button 
+                                  size="small" 
+                                  type="error" 
+                                  :disabled="order.status !== 'NEW'"
+                                  @click="cancelAlgoOrder(order)"
+                                  class="cancel-order-btn"
+                                >
+                                  撤单
+                                </n-button>
+                                <n-button 
+                                  size="small" 
+                                  type="warning" 
+                                  :disabled="order.status !== 'NEW'"
+                                  @click="batchCancelAlgoOrder(order)"
+                                  class="batch-cancel-btn"
+                                >
+                                  批量撤单
+                                </n-button>
                               </div>
                             </div>
                           </div>
@@ -761,6 +791,35 @@
           type="error" 
           @click="confirmBatchCancel"
           :loading="batchCancelModal.loading"
+        >
+          确认撤单
+        </n-button>
+      </template>
+    </n-modal>
+    
+    <!-- 条件单批量撤单弹窗 -->
+    <n-modal v-model:show="batchCancelAlgoModal.show" preset="dialog" title="批量撤销条件单确认" size="large">
+      <div v-if="batchCancelAlgoModal.symbol">
+        <n-descriptions :column="1" bordered>
+          <n-descriptions-item label="交易对">
+            <n-tag type="info" size="large">{{ batchCancelAlgoModal.symbol }}</n-tag>
+          </n-descriptions-item>
+        </n-descriptions>
+        
+        <n-alert type="warning" style="margin-top: 16px;">
+          <template #header>
+            确认批量撤销条件单
+          </template>
+          此操作将撤销所有用户中 <strong>{{ batchCancelAlgoModal.symbol }}</strong> 交易对的所有条件单。请确认无误后点击"确认撤单"。
+        </n-alert>
+      </div>
+      
+      <template #action>
+        <n-button @click="cancelBatchCancelAlgo">取消</n-button>
+        <n-button 
+          type="error" 
+          @click="confirmBatchCancelAlgo"
+          :loading="batchCancelAlgoModal.loading"
         >
           确认撤单
         </n-button>
@@ -1237,6 +1296,12 @@ const quickOrderForm = ref({
 
 // 批量撤单模态框
 const batchCancelModal = ref({
+  show: false,
+  loading: false,
+  symbol: ''
+})
+
+const batchCancelAlgoModal = ref({
   show: false,
   loading: false,
   symbol: ''
@@ -2328,6 +2393,221 @@ async function confirmBatchCancel() {
 // 取消批量撤单
 function cancelBatchCancel() {
   batchCancelModal.value.show = false
+}
+
+// 条件单批量撤单功能
+function batchCancelAlgoOrder(order) {
+  console.log('批量撤销条件单功能:', order)
+  
+  // 设置批量撤销条件单模态框数据
+  batchCancelAlgoModal.value = {
+    show: true,
+    loading: false,
+    symbol: order.symbol
+  }
+}
+
+// 确认批量撤销条件单
+async function confirmBatchCancelAlgo() {
+  try {
+    batchCancelAlgoModal.value.loading = true
+    
+    // 构建请求数据
+    const requestData = {
+      symbol: batchCancelAlgoModal.value.symbol
+    }
+    
+    console.log('发送批量撤销条件单请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_same`, requestData)
+    
+    console.log('批量撤销条件单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      const data = response.data.data
+      
+      // 统计成功和失败
+      let totalCancelled = 0
+      const successUsers = []
+      const noOrdersUsers = []
+      
+      data.results.forEach(result => {
+        const cancelledCount = result.cancelled || 0
+        totalCancelled += cancelledCount
+        
+        if (cancelledCount > 0) {
+          successUsers.push({
+            alias: result.alias,
+            symbol: result.symbol,
+            cancelled: cancelledCount,
+            orders: result.orders || []
+          })
+        } else {
+          noOrdersUsers.push({
+            alias: result.alias,
+            symbol: result.symbol
+          })
+        }
+      })
+      
+      // 构建结果消息
+      let resultMessage = `批量撤销条件单完成！\n\n`
+      resultMessage += `📊 订单信息:\n`
+      resultMessage += `   • 交易对: ${data.symbol}\n\n`
+      resultMessage += `📈 统计结果:\n`
+      resultMessage += `   • 处理用户数: ${data.user_count}\n`
+      resultMessage += `   • 成功撤销: ${data.total_cancelled}个条件单\n\n`
+      
+      if (successUsers.length > 0) {
+        resultMessage += '成功撤销详情:\n'
+        successUsers.forEach(user => {
+          resultMessage += `• ${user.alias} (${user.symbol}):\n`
+          resultMessage += `  撤销成功: ${user.cancelled}个条件单\n`
+          
+          if (user.orders.length > 0) {
+            resultMessage += `  条件单详情:\n`
+            user.orders.forEach(order => {
+              const status = order.status_code === 200 ? '✅ 成功' : '❌ 失败'
+              const errorMsg = order.result?.msg || ''
+              resultMessage += `    - 条件单ID: ${order.algoId} ${status}\n`
+              if (errorMsg) {
+                resultMessage += `      错误: ${errorMsg}\n`
+              }
+            })
+          }
+          resultMessage += '\n'
+        })
+      }
+      
+      if (noOrdersUsers.length > 0) {
+        resultMessage += '无条件单用户:\n'
+        noOrdersUsers.forEach(user => {
+          resultMessage += `• ${user.alias} (${user.symbol})\n`
+        })
+      }
+      
+      alert(resultMessage)
+      
+      // 关闭弹窗并刷新数据
+      batchCancelAlgoModal.value.show = false
+      await fetchAllAlgoOrders()
+    } else {
+      throw new Error(response.data?.message || '批量撤销条件单失败')
+    }
+    
+  } catch (error) {
+    console.error('批量撤销条件单失败:', error)
+    alert('批量撤销条件单失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    batchCancelAlgoModal.value.loading = false
+  }
+}
+
+// 取消批量撤销条件单
+function cancelBatchCancelAlgo() {
+  batchCancelAlgoModal.value.show = false
+}
+
+// 撤销全部条件单功能 - 撤销指定用户的所有条件单
+async function cancelAllAlgoOrders(user) {
+  try {
+    console.log('开始撤销用户的所有条件单:', user.name)
+    
+    if (!user) {
+      alert('用户信息无效')
+      return
+    }
+    
+    // 收集该用户的所有NEW状态条件单
+    const ordersToCancel = []
+    
+    if (user.algoOrders && user.algoOrders.length > 0) {
+      user.algoOrders.forEach(order => {
+        if (order.status === 'NEW') {
+          ordersToCancel.push({
+            user_id: user.id,
+            symbol: order.symbol,
+            algoId: order.algoId
+          })
+        }
+      })
+    }
+    
+    if (ordersToCancel.length === 0) {
+      alert('该用户没有可撤销的条件单')
+      return
+    }
+    
+    // 准备API请求参数
+    const requestData = {
+      orders: ordersToCancel
+    }
+    
+    console.log('发送撤销全部条件单请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_by_id`, requestData)
+    
+    console.log('撤销全部条件单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      alert(`撤销全部条件单成功！共撤销 ${ordersToCancel.length} 个条件单`)
+      
+      // 刷新条件单数据
+      await fetchAllAlgoOrders()
+    } else {
+      throw new Error(response.data?.message || '撤销全部条件单失败')
+    }
+  } catch (error) {
+    console.error('撤销全部条件单失败:', error)
+    const errorMessage = error.response?.data?.message || error.message || '撤销全部条件单失败'
+    alert('撤销全部条件单失败: ' + errorMessage)
+  }
+}
+
+// 撤销单个条件单功能
+async function cancelAlgoOrder(order) {
+  try {
+    console.log('开始撤销条件单:', order)
+    
+    // 获取用户ID
+    const userId = users.value.find(u => u.algoOrders?.some(o => o.algoId === order.algoId))?.id
+    if (!userId) {
+      throw new Error('未找到用户ID')
+    }
+    
+    // 准备API请求参数 - 只撤销这一个条件单
+    const requestData = {
+      orders: [
+        {
+          user_id: userId,
+          symbol: order.symbol,
+          algoId: order.algoId
+        }
+      ]
+    }
+    
+    console.log('发送撤销条件单请求:', requestData)
+    
+    // 调用后端API
+    const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_by_id`, requestData)
+    
+    console.log('撤销条件单响应:', response.data)
+    
+    if (response.data && response.data.success) {
+      alert('撤销条件单成功！')
+      
+      // 刷新条件单数据
+      await fetchAllAlgoOrders()
+    } else {
+      throw new Error(response.data?.message || '撤销条件单失败')
+    }
+  } catch (error) {
+    console.error('撤销条件单失败:', error)
+    const errorMessage = error.response?.data?.message || error.message || '撤销条件单失败'
+    alert('撤销条件单失败: ' + errorMessage)
+  }
 }
 
 // 撤销全部功能 - 撤销指定用户的所有订单
