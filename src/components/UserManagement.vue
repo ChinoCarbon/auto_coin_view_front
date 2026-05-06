@@ -47,7 +47,7 @@
           :disabled="!autoRefresh"
           @update:value="updateRefreshRate"
         />
-        <span class="control-label">毫秒</span>
+        <span class="control-label">毫秒（HTTP 拉仓位/钱包）</span>
         
         <span v-if="lastUpdateTime" class="last-update">
           最后更新: {{ formatTime(lastUpdateTime) }}
@@ -72,27 +72,79 @@
         <!-- 卡片头部 -->
         <div class="card-header">
           <div class="user-info">
-            <div class="user-avatar">
-              <span>{{ user.name.charAt(0).toUpperCase() }}</span>
-            </div>
             <div class="user-details">
               <h3 class="user-name">
-                {{ user.name }}
+                <span class="user-name-text">{{ user.name }}</span>
+                <span class="status-badge" :class="user.status">
+                  {{ user.status === 'online' ? '在线' : '离线' }}
+                </span>
+                <code class="user-id-chip" :title="user.id">{{ user.id.slice(0, 8) }}…</code>
                 <span v-if="user.useTestnet" class="testnet-badge">测试网</span>
               </h3>
-              <p class="user-balance">可用余额: ${{ user.availableBalance?.toFixed(2) || '0.00' }}</p>
-              <p v-if="user.walletBalance" class="user-wallet-balance">钱包余额: ${{ user.walletBalance.toFixed(2) }}</p>
-              <p v-if="user.unrealizedProfit !== undefined" class="user-unrealized-pnl" :class="user.unrealizedProfit >= 0 ? 'positive' : 'negative'">
-                未实现盈亏: {{ user.unrealizedProfit >= 0 ? '+' : '' }}${{ user.unrealizedProfit.toFixed(2) }}
-              </p>
-              <p class="user-id">ID: {{ user.id.slice(0, 8) }}...</p>
-              <p class="user-created">创建时间: {{ formatDate(user.createdAt) }}</p>
+              <div class="user-metrics">
+                <div class="user-metrics-hero">
+                  <div
+                    v-if="user.walletBalance != null || (user.positions && user.positions.length > 0)"
+                    class="metric metric--hero metric--margin-total"
+                    :title="'钱包余额(后端约每' + (refreshRate / 1000) + 's) + 各仓未实现盈亏(ticker 实时)'"
+                  >
+                    <span class="metric-label">总保证金</span>
+                    <span class="metric-value">${{ getUserEquityWithFloating(user).toFixed(2) }}</span>
+                  </div>
+                  <div
+                    v-if="user.unrealizedProfit !== undefined || (user.positions && user.positions.length > 0)"
+                    class="hero-pnl-with-toggle"
+                  >
+                    <div
+                      class="metric metric--hero metric--pnl"
+                      :class="getUserUnrealizedPnlLive(user) >= 0 ? 'is-profit' : 'is-loss'"
+                    >
+                      <span class="metric-label">未实现盈亏</span>
+                      <span class="metric-value">{{ getUserUnrealizedPnlLive(user) >= 0 ? '+' : '' }}${{ getUserUnrealizedPnlLive(user).toFixed(2) }}</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="balance-chevron-btn"
+                      :class="{ 'is-open': isBalanceDetailExpanded(user.id) }"
+                      :aria-expanded="isBalanceDetailExpanded(user.id)"
+                      aria-label="展开或收起可用余额与钱包余额"
+                      @click.stop="toggleBalanceDetail(user.id)"
+                    >
+                      <svg
+                        class="balance-chevron-svg"
+                        viewBox="0 0 16 10"
+                        width="14"
+                        height="9"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M2 2 L8 8 L14 2"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div
+                  v-show="isBalanceDetailExpanded(user.id)"
+                  class="user-metrics-secondary"
+                  @click.stop
+                >
+                  <div class="metric metric--sub metric--available">
+                    <span class="metric-label">可用余额</span>
+                    <span class="metric-value">${{ user.availableBalance?.toFixed(2) || '0.00' }}</span>
+                  </div>
+                  <div v-if="user.walletBalance != null" class="metric metric--sub metric--wallet">
+                    <span class="metric-label">钱包余额</span>
+                    <span class="metric-value">${{ Number(user.walletBalance).toFixed(2) }}</span>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="user-status">
-            <span class="status-badge" :class="user.status">
-              {{ user.status === 'online' ? '在线' : '离线' }}
-            </span>
           </div>
         </div>
 
@@ -145,20 +197,22 @@
                         <div class="pnl-info">
                           <span 
                             class="pnl-value" 
+                            :key="`pnl-${position.id}-${position._pnlFlashSeq || 0}`"
                             :class="{
                               'positive': position.unrealizedPnl >= 0, 
                               'negative': position.unrealizedPnl < 0,
-                              'highlight': position._highlightProfit
+                              'flash-pnl': (position._pnlFlashSeq || 0) > 0
                             }"
                           >
                             {{ position.unrealizedPnl >= 0 ? '+' : '' }}${{ position.unrealizedPnl.toFixed(2) }}
                           </span>
                           <span 
                             class="pnl-percentage" 
+                            :key="`pct-${position.id}-${position._pctFlashSeq || 0}`"
                             :class="{
                               'positive': position.percentage >= 0, 
                               'negative': position.percentage < 0,
-                              'highlight': position._highlightPercentage
+                              'flash-pnl': (position._pctFlashSeq || 0) > 0
                             }"
                           >
                             {{ position.percentage >= 0 ? '+' : '' }}{{ position.percentage.toFixed(2) }}%
@@ -1195,6 +1249,8 @@ import axios from 'axios'
 
 // 响应式数据
 const expandedUsers = ref([])
+/** 用户卡片内「可用/钱包」明细折叠：key 为 user.id */
+const balanceDetailExpandedByUserId = ref({})
 const users = ref([])
 const loading = ref(false)
 const positionsLoading = ref(false)
@@ -1203,7 +1259,7 @@ const algoOrdersLoading = ref(false) // 条件单加载状态
 const orderTabType = ref('basic') // 'basic' 或 'algo'
 const autoRefresh = ref(true)
 const refreshInterval = ref(null)
-const refreshRate = ref(3000) // 3秒刷新一次
+const refreshRate = ref(10000) // 默认 10s 请求后端刷新钱包/仓位；前端 ticker 实时推仓位盈亏
 const lastUpdateTime = ref(null)
 
 // 批量下单相关
@@ -1355,6 +1411,17 @@ async function fetchUsers() {
 }
 
 // 方法
+function isBalanceDetailExpanded(userId) {
+  return !!balanceDetailExpandedByUserId.value[userId]
+}
+
+function toggleBalanceDetail(userId) {
+  balanceDetailExpandedByUserId.value = {
+    ...balanceDetailExpandedByUserId.value,
+    [userId]: !balanceDetailExpandedByUserId.value[userId]
+  }
+}
+
 function toggleUser(userId) {
   const index = expandedUsers.value.indexOf(userId)
   if (index > -1) {
@@ -1463,10 +1530,28 @@ function formatTime(date) {
   }
 }
 
-// 获取所有用户的仓位数据
-async function fetchAllPositions() {
+/** 用户级未实现盈亏：有仓位时取各仓 unrealizedPnl 之和（随 ticker 动）；无仓时用后端钱包字段 */
+function getUserUnrealizedPnlLive(user) {
+  if (!user) return 0
+  const positions = user.positions || []
+  if (positions.length > 0) {
+    return positions.reduce((s, p) => s + (Number(p.unrealizedPnl) || 0), 0)
+  }
+  return Number(user.unrealizedProfit) || 0
+}
+
+/** 卡片「总保证金」展示值：后端钱包余额 + 各仓未实现盈亏（ticker 实时），与交易所 margin 术语可能略有出入 */
+function getUserEquityWithFloating(user) {
+  if (!user) return 0
+  const wb = Number(user.walletBalance) || 0
+  const pnlSum = (user.positions || []).reduce((s, p) => s + (Number(p.unrealizedPnl) || 0), 0)
+  return wb + pnlSum
+}
+
+// 获取所有用户的仓位数据；silent=true 时用于定时轮询，不触发全局 loading
+async function fetchAllPositions(silent = false) {
   try {
-    positionsLoading.value = true
+    if (!silent) positionsLoading.value = true
     
     const response = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/positions/all`)
     
@@ -1632,15 +1717,19 @@ async function fetchAllPositions() {
       // 更新最后更新时间
       lastUpdateTime.value = new Date()
       
-      // 重新启动WebSocket订阅（确保新仓位的币种也被订阅）
+      // 同步 WebSocket 订阅：静默轮询时仅当币种集合变化才重连，避免每 N 秒打断 ticker
       if (autoRefresh.value) {
-        startWebSocketSubscription()
+        const streamKey = getPositionSymbolsStreamKey()
+        if (!silent || streamKey !== lastWsStreamKey) {
+          lastWsStreamKey = streamKey
+          startWebSocketSubscription()
+        }
       }
     }
   } catch (error) {
     console.error('获取仓位数据失败:', error)
   } finally {
-    positionsLoading.value = false
+    if (!silent) positionsLoading.value = false
   }
 }
 
@@ -1879,6 +1968,17 @@ let wsLastMessageTime = 0
 let wsMessageCount = 0
 let wsUpdateCount = 0
 let wsErrorCount = 0
+let lastWsStreamKey = ''
+
+function getPositionSymbolsStreamKey() {
+  const s = new Set()
+  users.value.forEach(user => {
+    (user.positions || []).forEach(pos => {
+      if (pos.symbol) s.add(String(pos.symbol).toLowerCase())
+    })
+  })
+  return [...s].sort().join(',')
+}
 
 // 更新仓位价格
 function updatePositionPrices(symbol, currentPrice) {
@@ -1889,7 +1989,11 @@ function updatePositionPrices(symbol, currentPrice) {
   // 创建新的users数组，确保响应式更新
   const newUsers = users.value.map(user => {
     const newPositions = user.positions.map(position => {
-      if (position.symbol === symbol) {
+      if (
+        position.symbol &&
+        symbol &&
+        position.symbol.toUpperCase() === String(symbol).toUpperCase()
+      ) {
         foundPositions++
         
         // 获取原始数据（从API获取的固定数据，刷新时更新）
@@ -1943,9 +2047,15 @@ function updatePositionPrices(symbol, currentPrice) {
           }
         }
         
-        // 检查数值是否发生变化，添加高亮效果
-        const profitChanged = Math.abs(position.unrealizedPnl - newUnrealizedPnl) > 0.01
-        const percentageChanged = Math.abs(position.percentage - newPercentage) > 0.01
+        // 与界面 toFixed(2) 一致时才认为变化，避免阈值导致无反馈；用 :key 递增强制重挂载以重播 CSS 动画
+        const prevPnlStr = Number(position.unrealizedPnl).toFixed(2)
+        const newPnlStr = Number(newUnrealizedPnl).toFixed(2)
+        const pnlDisplayChanged = prevPnlStr !== newPnlStr
+        const prevPctStr = Number(position.percentage).toFixed(2)
+        const newPctStr = Number(newPercentage).toFixed(2)
+        const pctDisplayChanged = prevPctStr !== newPctStr
+        const pSeq = position._pnlFlashSeq || 0
+        const cSeq = position._pctFlashSeq || 0
         
         hasUpdate = true
         
@@ -1959,9 +2069,8 @@ function updatePositionPrices(symbol, currentPrice) {
           notional: newNotional,
           margin: newMargin,
           leverage: newLeverage,
-          // 添加高亮标记
-          _highlightProfit: profitChanged,
-          _highlightPercentage: percentageChanged
+          _pnlFlashSeq: pnlDisplayChanged ? pSeq + 1 : pSeq,
+          _pctFlashSeq: pctDisplayChanged ? cSeq + 1 : cSeq
         }
       }
       
@@ -1979,20 +2088,6 @@ function updatePositionPrices(symbol, currentPrice) {
   // 如果有更新，替换整个users数组
   if (hasUpdate) {
     users.value = newUsers
-    
-    // 清除高亮效果（1秒后）
-    nextTick(() => {
-      users.value.forEach(user => {
-        user.positions.forEach(position => {
-          if (position._highlightProfit || position._highlightPercentage) {
-            setTimeout(() => {
-              position._highlightProfit = false
-              position._highlightPercentage = false
-            }, 1000)
-          }
-        })
-      })
-    })
   }
   
   // 调试信息：记录价格更新统计
@@ -2030,7 +2125,8 @@ function startWebSocketSubscription() {
 
   // 生成多流订阅 URL（示例：btcusdt@ticker/ethusdt@ticker）
   const streams = Array.from(symbols).map(s => `${s}@ticker`).join('/')
-  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+  // USDⓈ-M 合约：@ticker 属 Market 流，须使用 /market/stream（见币安 WebSocket 路由拆分公告）
+  const wsUrl = `wss://fstream.binance.com/market/stream?streams=${streams}`
 
   console.log('🔗 WebSocket订阅信息:')
   console.log(`   📊 订阅币种数量: ${symbols.size}`)
@@ -2217,11 +2313,23 @@ function stopHeartbeat() {
   }
 }
 
-// ▶️ 启动自动刷新（开启 WebSocket）
+// ▶️ 启动自动刷新（HTTP 定时拉后端 + WebSocket ticker）
 function startAutoRefresh() {
-  if (refreshInterval.value) clearInterval(refreshInterval.value)
+  if (refreshInterval.value) {
+    clearInterval(refreshInterval.value)
+    refreshInterval.value = null
+  }
   if (autoRefresh.value) {
     startWebSocketSubscription()
+    const period = Math.min(60000, Math.max(1000, Number(refreshRate.value) || 10000))
+    refreshInterval.value = setInterval(async () => {
+      if (!autoRefresh.value) return
+      try {
+        await fetchAllPositions(true)
+      } catch (e) {
+        console.warn('定时拉取仓位/钱包失败:', e)
+      }
+    }, period)
   } else {
     console.log('⏸️ 自动刷新已关闭')
   }
@@ -4040,34 +4148,39 @@ window.startWebSocketSubscription = startWebSocketSubscription
 .card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 16px;
+  align-items: flex-start;
+  padding: 14px 16px 16px;
   border-bottom: 1px solid var(--n-border-color);
+  gap: 12px;
 }
 
 .user-info {
   display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.user-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--n-color-primary);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: bold;
-  font-size: 18px;
+  align-items: flex-start;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
 }
 
 .user-details {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--n-color-primary) 32%, var(--n-border-color));
+  /* 整块总背景：主色明显混入，一眼能看出区域 */
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--n-color-primary) 26%, var(--n-card-color)) 0%,
+    color-mix(in srgb, var(--n-color-primary) 12%, var(--n-card-color)) 45%,
+    color-mix(in srgb, var(--n-color-primary) 6%, var(--n-card-color)) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--n-text-color-1) 6%, transparent),
+    0 6px 22px color-mix(in srgb, var(--n-color-primary) 24%, transparent);
 }
 
 .user-name {
@@ -4076,7 +4189,33 @@ window.startWebSocketSubscription = startWebSocketSubscription
   font-weight: 600;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  line-height: 1.35;
+  /* 与下方两列同一左右边距（不再额外缩进） */
+  padding: 0 0 12px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--n-border-color) 65%, var(--n-color-primary) 15%);
+}
+
+.user-name-text {
+  letter-spacing: 0.02em;
+}
+
+.user-id-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--n-text-color-2);
+  background: color-mix(in srgb, var(--n-border-color) 38%, var(--n-card-color) 62%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 65%, transparent);
+  border-radius: 8px;
+  padding: 3px 9px;
+  cursor: default;
 }
 
 .testnet-badge {
@@ -4088,48 +4227,221 @@ window.startWebSocketSubscription = startWebSocketSubscription
   font-weight: 500;
 }
 
-.user-balance {
+.user-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.user-metrics-hero {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--n-color-success);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  align-items: stretch;
 }
 
-.user-wallet-balance {
-  margin: 0;
-  font-size: 12px;
-  color: var(--n-text-color-2);
+.hero-pnl-with-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
 }
 
-.user-unrealized-pnl {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
+.hero-pnl-with-toggle .metric--pnl {
+  flex: 1;
+  min-width: 0;
 }
 
-.user-unrealized-pnl.positive {
-  color: var(--n-color-success);
-}
-
-.user-unrealized-pnl.negative {
-  color: var(--n-color-error);
-}
-
-.user-id {
-  margin: 0;
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-.user-created {
-  margin: 0;
-  font-size: 11px;
-  color: var(--n-text-color-3);
-}
-
-.user-status {
+.balance-chevron-btn {
+  flex-shrink: 0;
+  align-self: center;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  color: var(--n-text-color-1);
+  background: color-mix(in srgb, var(--n-border-color) 55%, transparent);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.balance-chevron-btn:hover {
+  color: var(--n-color-primary);
+  background: color-mix(in srgb, var(--n-color-primary) 16%, transparent);
+}
+
+.balance-chevron-svg {
+  display: block;
+  transition: transform 0.2s ease;
+  transform-origin: 50% 55%;
+}
+
+.balance-chevron-btn.is-open .balance-chevron-svg {
+  transform: rotate(180deg);
+}
+
+.user-metrics-hero > .metric--hero:only-child {
+  grid-column: 1 / -1;
+}
+
+.user-metrics-hero > .hero-pnl-with-toggle:only-child {
+  grid-column: 1 / -1;
+}
+
+.user-metrics-secondary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 0 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  border-top: 1px solid color-mix(in srgb, var(--n-border-color) 65%, var(--n-color-primary) 12%);
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.user-metrics-secondary > .metric--sub:only-child {
+  grid-column: 1 / -1;
+}
+
+.metric {
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-border-color);
+  background: linear-gradient(
+    155deg,
+    color-mix(in srgb, var(--n-card-color) 100%, transparent) 0%,
+    color-mix(in srgb, var(--n-border-color) 28%, transparent) 100%
+  );
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.metric--hero {
+  padding: 12px 14px;
+  border-radius: 11px;
+  gap: 6px;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--n-text-color-1) 7%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.metric--hero .metric-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-text-color-2);
+  letter-spacing: 0.06em;
+}
+
+.metric--hero .metric-value {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.metric--margin-total {
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--n-color-primary) 55%, var(--n-border-color));
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--n-color-primary) 12%, var(--n-card-color)) 0%,
+    color-mix(in srgb, var(--n-card-color) 100%, transparent) 100%
+  );
+}
+
+.metric--margin-total .metric-value {
+  color: var(--n-color-primary);
+}
+
+.metric--sub {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--n-card-color) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--n-text-color-1) 5%, transparent);
+  gap: 4px;
+}
+
+.metric--sub .metric-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--n-text-color-3);
+  letter-spacing: 0.02em;
+}
+
+.metric--sub .metric-value {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--n-text-color-3);
+}
+
+.metric--sub.metric--available .metric-value {
+  color: color-mix(in srgb, #15803d 72%, var(--n-text-color-3));
+}
+
+.metric--sub.metric--wallet .metric-value {
+  color: var(--n-text-color-3);
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--n-text-color-3);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.metric-value {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--n-text-color-1);
+  line-height: 1.2;
+}
+
+.metric--hero.metric--pnl.is-profit {
+  border-color: color-mix(in srgb, #22c55e 55%, var(--n-border-color));
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, #22c55e 14%, var(--n-card-color)) 0%,
+    color-mix(in srgb, var(--n-card-color) 100%, transparent) 100%
+  );
+}
+
+.metric--hero.metric--pnl.is-profit .metric-value {
+  color: #15803d;
+}
+
+.metric--hero.metric--pnl.is-loss {
+  border-color: color-mix(in srgb, #ef4444 55%, var(--n-border-color));
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, #ef4444 12%, var(--n-card-color)) 0%,
+    color-mix(in srgb, var(--n-card-color) 100%, transparent) 100%
+  );
+}
+
+.metric--hero.metric--pnl.is-loss .metric-value {
+  color: #dc2626;
 }
 
 .status-badge {
@@ -4562,27 +4874,27 @@ window.startWebSocketSubscription = startWebSocketSubscription
   transition: all 0.3s ease;
 }
 
-.pnl-value.highlight,
-.pnl-percentage.highlight {
-  background: #fbbf24;
-  color: #92400e;
+.pnl-value.flash-pnl,
+.pnl-percentage.flash-pnl {
+  display: inline-block;
   padding: 2px 6px;
-  border-radius: 4px;
-  animation: highlightPulse 1s ease-in-out;
+  border-radius: 6px;
+  animation: highlightPulse 0.55s ease-out;
+  will-change: transform, box-shadow;
 }
 
 @keyframes highlightPulse {
   0% {
-    background: #fbbf24;
     transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.55);
   }
-  50% {
-    background: #f59e0b;
-    transform: scale(1.05);
+  45% {
+    transform: scale(1.06);
+    box-shadow: 0 0 0 6px rgba(251, 191, 36, 0);
   }
   100% {
-    background: #fbbf24;
     transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
   }
 }
 

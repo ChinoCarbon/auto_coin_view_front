@@ -303,7 +303,7 @@ function initBinanceWebSocket() {
   
   // 构建订阅流：btcusdt@kline_1m/ethusdt@kline_1m
   const streams = Array.from(symbols).map(s => `${s}@kline_1m`).join('/')
-  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+  const wsUrl = `wss://fstream.binance.com/market/stream?streams=${streams}`
   
   console.log('初始化币安WebSocket连接，订阅K线数据:', Array.from(symbols))
   
@@ -422,7 +422,7 @@ function initBinanceWebSocket5m() {
   
   // 构建订阅流：btcusdt@kline_5m/ethusdt@kline_5m
   const streams = Array.from(symbols).map(s => `${s}@kline_5m`).join('/')
-  const wsUrl = `wss://fstream.binance.com/stream?streams=${streams}`
+  const wsUrl = `wss://fstream.binance.com/market/stream?streams=${streams}`
   
   console.log('初始化币安5分钟K线WebSocket连接，订阅K线数据:', Array.from(symbols))
   
