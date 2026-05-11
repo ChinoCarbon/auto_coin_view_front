@@ -338,7 +338,7 @@
                               <n-button 
                                 size="small" 
                                 type="error" 
-                                :disabled="order.status !== 'NEW'"
+                                :disabled="!isCancellableOrderStatus(order.status)"
                                 @click="cancelOrder(user, order)"
                                 class="cancel-order-btn"
                               >
@@ -347,7 +347,7 @@
                               <n-button 
                                 size="small" 
                                 type="warning" 
-                                :disabled="order.status !== 'NEW'"
+                                :disabled="!isCancellableOrderStatus(order.status)"
                                 @click="batchCancelOrder(user, order)"
                                 class="batch-cancel-btn"
                               >
@@ -463,7 +463,7 @@
                                 <n-button 
                                   size="small" 
                                   type="error" 
-                                  :disabled="order.status !== 'NEW'"
+                                  :disabled="!isCancellableOrderStatus(order.status)"
                                   @click="cancelAlgoOrder(user, order)"
                                   class="cancel-order-btn"
                                 >
@@ -472,7 +472,7 @@
                                 <n-button 
                                   size="small" 
                                   type="warning" 
-                                  :disabled="order.status !== 'NEW'"
+                                  :disabled="!isCancellableOrderStatus(order.status)"
                                   @click="batchCancelAlgoOrder(user, order)"
                                   class="batch-cancel-btn"
                                 >
@@ -1633,10 +1633,10 @@ function formatDurationMs(ms) {
 }
 
 function onUserCardTabChange(user, name) {
-  if (!user.useTestnet) return
-  if (name === 'paperHistory') {
+  // 仅模拟盘 Tab 需按需拉数据；主网用户切「仓位/挂单」等不要在这里被短路
+  if (name === 'paperHistory' && user.useTestnet) {
     loadPaperPositionHistory(user)
-  } else if (name === 'paperOperations') {
+  } else if (name === 'paperOperations' && user.useTestnet) {
     loadPaperOperations(user)
   }
 }
@@ -1846,6 +1846,12 @@ function getOrderStatusText(status) {
     'EXPIRED': '已过期'
   }
   return statusMap[status] || status
+}
+
+/** 与币安一致：未完结、仍可撤的挂单（大小写不敏感）；避免主网返回非严格 'NEW' 时撤单按钮永久禁用 */
+function isCancellableOrderStatus(status) {
+  const s = String(status ?? '').trim().toUpperCase()
+  return s === 'NEW' || s === 'PARTIALLY_FILLED'
 }
 
 function getOrderTypeText(type) {
@@ -2936,7 +2942,7 @@ async function confirmBatchCancel() {
       const ordersToCancel = []
       if (u?.orders?.length) {
         u.orders.forEach(o => {
-          if (o.status === 'NEW' && o.symbol === sym) {
+          if (isCancellableOrderStatus(o.status) && o.symbol === sym) {
             ordersToCancel.push({
               user_id: u.id,
               symbol: o.symbol,
@@ -3083,7 +3089,7 @@ async function confirmBatchCancelAlgo() {
       const ordersToCancel = []
       if (u?.algoOrders?.length) {
         u.algoOrders.forEach(o => {
-          if (o.status === 'NEW' && o.symbol === sym) {
+          if (isCancellableOrderStatus(o.status) && o.symbol === sym) {
             ordersToCancel.push({
               user_id: u.id,
               symbol: o.symbol,
@@ -3220,7 +3226,7 @@ async function cancelAllAlgoOrders(user) {
     
     if (user.algoOrders && user.algoOrders.length > 0) {
       user.algoOrders.forEach(order => {
-        if (order.status === 'NEW') {
+        if (isCancellableOrderStatus(order.status)) {
           ordersToCancel.push({
             user_id: user.id,
             symbol: order.symbol,
@@ -3314,7 +3320,7 @@ async function cancelAllOrders(user) {
     
     if (user.orders && user.orders.length > 0) {
       user.orders.forEach(order => {
-        if (order.status === 'NEW') {
+        if (isCancellableOrderStatus(order.status)) {
           ordersToCancel.push({
             user_id: user.id,
             symbol: order.symbol,
