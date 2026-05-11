@@ -150,7 +150,7 @@
 
         <!-- 卡片内容 - 展开时显示 -->
         <div v-if="expandedUsers.includes(user.id)" class="card-content" @click.stop>
-          <n-tabs type="line" animated>
+          <n-tabs type="line" animated @update:value="(name) => onUserCardTabChange(user, name)">
             <!-- 仓位情况 Tab -->
             <n-tab-pane name="positions" tab="仓位情况">
               <div class="tab-content">
@@ -232,7 +232,7 @@
                           type="error" 
                           size="small" 
                           class="action-btn close-btn"
-                          @click="handleClosePosition(position)"
+                          @click="handleClosePosition(user, position)"
                         >
                           市价平仓
                         </n-button>
@@ -240,7 +240,7 @@
                           type="warning" 
                           size="small" 
                           class="action-btn tp-sl-btn"
-                          @click="handleTpSl(position)"
+                          @click="handleTpSl(user, position)"
                         >
                           止盈止损
                         </n-button>
@@ -248,7 +248,7 @@
                           type="info" 
                           size="small" 
                           class="action-btn leverage-btn"
-                          @click="handleModifyLeverage(position)"
+                          @click="handleModifyLeverage(user, position)"
                         >
                           修改杠杆
                         </n-button>
@@ -339,7 +339,7 @@
                                 size="small" 
                                 type="error" 
                                 :disabled="order.status !== 'NEW'"
-                                @click="cancelOrder(order)"
+                                @click="cancelOrder(user, order)"
                                 class="cancel-order-btn"
                               >
                                 撤单
@@ -348,7 +348,7 @@
                                 size="small" 
                                 type="warning" 
                                 :disabled="order.status !== 'NEW'"
-                                @click="batchCancelOrder(order)"
+                                @click="batchCancelOrder(user, order)"
                                 class="batch-cancel-btn"
                               >
                                 批量撤单
@@ -464,7 +464,7 @@
                                   size="small" 
                                   type="error" 
                                   :disabled="order.status !== 'NEW'"
-                                  @click="cancelAlgoOrder(order)"
+                                  @click="cancelAlgoOrder(user, order)"
                                   class="cancel-order-btn"
                                 >
                                   撤单
@@ -473,7 +473,7 @@
                                   size="small" 
                                   type="warning" 
                                   :disabled="order.status !== 'NEW'"
-                                  @click="batchCancelAlgoOrder(order)"
+                                  @click="batchCancelAlgoOrder(user, order)"
                                   class="batch-cancel-btn"
                                 >
                                   批量撤单
@@ -489,6 +489,169 @@
                     </div>
                   </n-tab-pane>
                 </n-tabs>
+              </div>
+            </n-tab-pane>
+
+            <!-- 模拟盘仓位历史（仅 useTestnet） -->
+            <n-tab-pane v-if="user.useTestnet" name="paperHistory" tab="仓位历史">
+              <div class="tab-content paper-history-tab">
+                <div class="paper-history-toolbar">
+                  <n-input
+                    v-model:value="getPaperHistoryEntry(user.id).symbol"
+                    placeholder="symbol 筛选，如 ETHUSDT"
+                    clearable
+                    style="width: 160px; margin-right: 8px;"
+                  />
+                  <n-select
+                    v-model:value="getPaperHistoryEntry(user.id).position_side"
+                    :options="paperHistorySideOptions"
+                    placeholder="方向"
+                    clearable
+                    style="width: 110px; margin-right: 8px;"
+                  />
+                  <n-input-number
+                    v-model:value="getPaperHistoryEntry(user.id).limit"
+                    :min="1"
+                    :max="500"
+                    placeholder="limit"
+                    style="width: 100px; margin-right: 8px;"
+                  />
+                  <n-input-number
+                    v-model:value="getPaperHistoryEntry(user.id).offset"
+                    :min="0"
+                    placeholder="offset"
+                    style="width: 100px; margin-right: 8px;"
+                  />
+                  <n-select
+                    v-model:value="getPaperHistoryEntry(user.id).order"
+                    :options="paperHistoryOrderOptions"
+                    style="width: 100px; margin-right: 8px;"
+                  />
+                  <n-checkbox v-model:checked="getPaperHistoryEntry(user.id).include_open" style="margin-right: 8px;">
+                    含当前持仓
+                  </n-checkbox>
+                  <n-button
+                    type="primary"
+                    size="small"
+                    :loading="getPaperHistoryEntry(user.id).loading"
+                    @click="loadPaperPositionHistory(user)"
+                  >
+                    查询
+                  </n-button>
+                </div>
+                <p v-if="getPaperHistoryEntry(user.id).error" class="paper-history-error">{{ getPaperHistoryEntry(user.id).error }}</p>
+                <div v-if="getPaperHistoryEntry(user.id).loading" class="paper-history-loading">加载中…</div>
+                <template v-else>
+                  <div v-if="getPaperHistoryEntry(user.id).openPositions?.length" class="paper-history-open">
+                    <h4>当前未平合约（include_open）</h4>
+                    <div class="paper-session-list">
+                      <div
+                        v-for="(p, idx) in getPaperHistoryEntry(user.id).openPositions"
+                        :key="'open-' + idx"
+                        class="paper-session-card"
+                      >
+                        <span class="ph-mono">{{ p.symbol }}</span>
+                        <span>{{ p.positionSide || p.side || '--' }}</span>
+                        <span class="ph-muted">amt {{ p.positionAmt ?? p.amount ?? '--' }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <h4 class="paper-history-h4">已结束会话</h4>
+                  <div v-if="!getPaperHistoryEntry(user.id).sessions?.length" class="empty-state">
+                    <n-empty description="暂无历史记录" />
+                  </div>
+                  <div v-else class="paper-session-list">
+                    <div
+                      v-for="(s, sidx) in getPaperHistoryEntry(user.id).sessions"
+                      :key="(s.session_id != null ? s.session_id : 's') + '-' + sidx + '-' + (s.symbol || '')"
+                      class="paper-session-card"
+                    >
+                    <div class="paper-session-row">
+                      <span class="ph-strong">{{ s.symbol }}</span>
+                      <span class="ph-tag">{{ s.positionSide }}</span>
+                      <span class="ph-muted">session {{ s.session_id }}</span>
+                    </div>
+                    <div class="paper-session-row ph-small">
+                      <span>开仓: {{ s.opened_at_iso_utc || formatTs(s.opened_at) }}</span>
+                      <span>平仓: {{ s.closed_at_iso_utc || formatTs(s.closed_at) }}</span>
+                      <span>时长 {{ formatDurationMs(s.duration_ms) }}</span>
+                    </div>
+                    <div class="paper-session-row ph-small">
+                      <span :class="Number(s.total_realized_pnl_net) >= 0 ? 'positive' : 'negative'">
+                        已实现盈亏 {{ s.total_realized_pnl_net }}
+                      </span>
+                      <span>平仓笔数 {{ s.close_legs_count }}</span>
+                      <span>状态 {{ s.status }}</span>
+                    </div>
+                  </div>
+                  </div>
+                </template>
+              </div>
+            </n-tab-pane>
+
+            <!-- 模拟盘操作历史（仅 useTestnet） -->
+            <n-tab-pane v-if="user.useTestnet" name="paperOperations" tab="操作历史">
+              <div class="tab-content paper-ops-tab">
+                <div class="paper-history-toolbar">
+                  <n-input-number
+                    v-model:value="getPaperOperationsEntry(user.id).limit"
+                    :min="1"
+                    :max="500"
+                    placeholder="limit"
+                    style="width: 100px; margin-right: 8px;"
+                  />
+                  <n-input-number
+                    v-model:value="getPaperOperationsEntry(user.id).offset"
+                    :min="0"
+                    placeholder="offset"
+                    style="width: 100px; margin-right: 8px;"
+                  />
+                  <n-select
+                    v-model:value="getPaperOperationsEntry(user.id).order"
+                    :options="paperOperationsOrderOptions"
+                    style="width: 120px; margin-right: 8px;"
+                  />
+                  <n-button
+                    type="primary"
+                    size="small"
+                    :loading="getPaperOperationsEntry(user.id).loading"
+                    @click="loadPaperOperations(user)"
+                  >
+                    查询
+                  </n-button>
+                  <n-button
+                    size="small"
+                    quaternary
+                    :disabled="getPaperOperationsEntry(user.id).loading"
+                    @click="exportPaperOperations(user, 'json')"
+                  >
+                    导出 JSON
+                  </n-button>
+                  <n-button
+                    size="small"
+                    quaternary
+                    :disabled="getPaperOperationsEntry(user.id).loading"
+                    @click="exportPaperOperations(user, 'csv')"
+                  >
+                    导出 CSV
+                  </n-button>
+                </div>
+                <p v-if="getPaperOperationsEntry(user.id).error" class="paper-history-error">{{ getPaperOperationsEntry(user.id).error }}</p>
+                <div v-if="getPaperOperationsEntry(user.id).loading" class="paper-history-loading">加载中…</div>
+                <template v-else>
+                  <div v-if="!getPaperOperationsEntry(user.id).operations?.length" class="empty-state">
+                    <n-empty description="暂无操作记录" />
+                  </div>
+                  <div v-else class="paper-ops-timeline">
+                    <div
+                      v-for="(op, oidx) in getPaperOperationsEntry(user.id).operations"
+                      :key="op.id || op.seq || ('op-' + oidx)"
+                      class="paper-op-card"
+                    >
+                      <div class="paper-op-narrative">{{ op.narrative_zh || '—' }}</div>
+                    </div>
+                  </div>
+                </template>
               </div>
             </n-tab-pane>
           </n-tabs>
@@ -507,7 +670,7 @@
         <n-form-item label="选择用户">
           <div style="margin-bottom: 12px;">
             <n-checkbox v-model:checked="useAllUsers" @update:checked="onAllUsersChange">
-              全部用户下单
+              全部用户下单（不含测试网）
             </n-checkbox>
           </div>
           <n-checkbox-group v-model:value="selectedUsers" :disabled="useAllUsers">
@@ -620,10 +783,10 @@
           </div>
         </n-form-item>
         
-        <n-form-item v-if="((useAllUsers && users.length > 0) || selectedUsers.length > 0) && batchOrderForm.symbol" label="下单预览">
+        <n-form-item v-if="((useAllUsers && usersForBulkAll.length > 0) || selectedUsers.length > 0) && batchOrderForm.symbol" label="下单预览">
           <div class="order-preview">
             <div 
-              v-for="userId in (useAllUsers ? users.map(u => u.id) : selectedUsers)" 
+              v-for="userId in (useAllUsers ? usersForBulkAll.map(u => u.id) : selectedUsers)" 
               :key="userId"
               class="preview-item"
             >
@@ -690,7 +853,7 @@
         <n-form-item label="选择用户">
           <div style="margin-bottom: 12px;">
             <n-checkbox v-model:checked="quickOrderUseAllUsers" @update:checked="onQuickOrderAllUsersChange">
-              全部用户下单
+              全部用户下单（不含测试网）
             </n-checkbox>
           </div>
           <n-checkbox-group v-model:value="quickOrderSelectedUsers" :disabled="quickOrderUseAllUsers">
@@ -745,10 +908,10 @@
           </div>
         </n-form-item>
         
-        <n-form-item v-if="((quickOrderUseAllUsers && users.length > 0) || quickOrderSelectedUsers.length > 0)" label="下单预览">
+        <n-form-item v-if="((quickOrderUseAllUsers && usersForBulkAll.length > 0) || quickOrderSelectedUsers.length > 0)" label="下单预览">
           <div class="order-preview">
             <div 
-              v-for="userId in (quickOrderUseAllUsers ? users.map(u => u.id) : quickOrderSelectedUsers)" 
+              v-for="userId in (quickOrderUseAllUsers ? usersForBulkAll.map(u => u.id) : quickOrderSelectedUsers)" 
               :key="userId"
               class="preview-item"
             >
@@ -835,7 +998,12 @@
           <template #header>
             确认批量撤单
           </template>
-          此操作将撤销所有用户中 <strong>{{ batchCancelModal.symbol }}</strong> 交易对的所有挂单。请确认无误后点击"确认撤单"。
+          <template v-if="batchCancelModal.scopedUserId">
+            将仅撤销用户 <strong>{{ batchCancelModal.scopedUserAlias }}</strong> 在 <strong>{{ batchCancelModal.symbol }}</strong> 上的基础挂单（模拟盘范围）。
+          </template>
+          <template v-else>
+            此操作将撤销所有用户中 <strong>{{ batchCancelModal.symbol }}</strong> 交易对的所有挂单。请确认无误后点击"确认撤单"。
+          </template>
         </n-alert>
       </div>
       
@@ -864,7 +1032,12 @@
           <template #header>
             确认批量撤销条件单
           </template>
-          此操作将撤销所有用户中 <strong>{{ batchCancelAlgoModal.symbol }}</strong> 交易对的所有条件单。请确认无误后点击"确认撤单"。
+          <template v-if="batchCancelAlgoModal.scopedUserId">
+            将仅撤销用户 <strong>{{ batchCancelAlgoModal.scopedUserAlias }}</strong> 在 <strong>{{ batchCancelAlgoModal.symbol }}</strong> 上的条件单（模拟盘范围）。
+          </template>
+          <template v-else>
+            此操作将撤销所有用户中 <strong>{{ batchCancelAlgoModal.symbol }}</strong> 交易对的所有条件单。请确认无误后点击"确认撤单"。
+          </template>
         </n-alert>
       </div>
       
@@ -901,7 +1074,8 @@
           <div class="leverage-info">
             <div class="title-main">{{ modifyLeverageModal.symbol }} {{ modifyLeverageModal.side === 'LONG' ? '多头' : '空头' }}</div>
             <div class="title-sub">修改杠杆</div>
-            <p class="info-text">将为所有持有该币种且方向一致的用户修改杠杆倍数</p>
+            <p v-if="modifyLeverageModal.onlyPaperUser" class="info-text">仅对当前模拟盘用户生效</p>
+            <p v-else class="info-text">将为所有持有该币种且方向一致的用户修改杠杆倍数</p>
           </div>
           
           <!-- 杠杆选择 -->
@@ -1094,7 +1268,7 @@
           
           <!-- 用户列表和预计盈亏 -->
           <div class="users-list">
-            <h5>受影响用户</h5>
+            <h5>{{ tpSlModal.onlyPaperUser ? '受影响用户（仅模拟盘本人）' : '受影响用户' }}</h5>
             <div class="users-container">
               <div 
                 v-for="user in tpSlModal.affectedUsers" 
@@ -1185,7 +1359,7 @@
           
           <!-- 用户列表 -->
           <div class="users-list">
-            <h5>平仓用户列表</h5>
+            <h5>{{ closePositionModal.onlyPaperUser ? '平仓用户（仅模拟盘本人）' : '平仓用户列表' }}</h5>
             <div class="users-container">
               <div 
                 v-for="user in closePositionModal.affectedUsers" 
@@ -1252,6 +1426,8 @@ const expandedUsers = ref([])
 /** 用户卡片内「可用/钱包」明细折叠：key 为 user.id */
 const balanceDetailExpandedByUserId = ref({})
 const users = ref([])
+/** 「全部用户」下单：仅主网用户，不含 useTestnet */
+const usersForBulkAll = computed(() => users.value.filter(u => !u.useTestnet))
 const loading = ref(false)
 const positionsLoading = ref(false)
 const ordersLoading = ref(false)
@@ -1289,7 +1465,9 @@ const closePositionModal = ref({
   percentage: 100,
   affectedUsers: [],
   totalExpectedProfit: 0,
-  loading: false
+  loading: false,
+  /** 从测试网用户卡片发起：仅本人 + 走模拟盘接口 */
+  onlyPaperUser: false
 })
 
 // 百分比滑块标记
@@ -1311,7 +1489,8 @@ const modifyLeverageModal = ref({
   maxLeverage: 1,
   affectedUsers: [],
   leverageMarks: {},
-  loading: false
+  loading: false,
+  onlyPaperUser: false
 })
 
 // 止盈止损相关
@@ -1321,6 +1500,7 @@ const tpSlModal = ref({
   side: '',
   closeRatio: 100,
   affectedUsers: [],
+  onlyPaperUser: false,
   takeProfit: {
     enabled: false,
     price: null,
@@ -1354,14 +1534,236 @@ const quickOrderForm = ref({
 const batchCancelModal = ref({
   show: false,
   loading: false,
-  symbol: ''
+  symbol: '',
+  /** 测试网：仅撤销该用户同 symbol 基础单；null 表示全员 cancel_same */
+  scopedUserId: null,
+  scopedUserAlias: ''
 })
 
 const batchCancelAlgoModal = ref({
   show: false,
   loading: false,
-  symbol: ''
+  symbol: '',
+  scopedUserId: null,
+  scopedUserAlias: ''
 })
+
+/** 模拟盘仓位历史：按 user.id 存查询状态 */
+const paperHistoryEntries = ref({})
+
+/** 模拟盘操作历史：按 user.id 存查询状态 */
+const paperOperationsEntries = ref({})
+
+const paperOperationsOrderOptions = [
+  { label: '时间正序', value: 'asc' },
+  { label: '最新在前', value: 'desc' }
+]
+
+const paperHistorySideOptions = [
+  { label: '不限', value: null },
+  { label: 'LONG', value: 'LONG' },
+  { label: 'SHORT', value: 'SHORT' }
+]
+
+const paperHistoryOrderOptions = [
+  { label: '新→旧', value: 'desc' },
+  { label: '旧→新', value: 'asc' }
+]
+
+function getPaperHistoryEntry(userId) {
+  if (!paperHistoryEntries.value[userId]) {
+    paperHistoryEntries.value = {
+      ...paperHistoryEntries.value,
+      [userId]: {
+        loading: false,
+        sessions: [],
+        openPositions: [],
+        error: '',
+        symbol: '',
+        position_side: null,
+        limit: 100,
+        offset: 0,
+        order: 'desc',
+        include_open: false
+      }
+    }
+  }
+  return paperHistoryEntries.value[userId]
+}
+
+function getPaperOperationsEntry(userId) {
+  if (!paperOperationsEntries.value[userId]) {
+    paperOperationsEntries.value = {
+      ...paperOperationsEntries.value,
+      [userId]: {
+        loading: false,
+        operations: [],
+        total: null,
+        error: '',
+        limit: 500,
+        offset: 0,
+        order: 'asc'
+      }
+    }
+  }
+  return paperOperationsEntries.value[userId]
+}
+
+function formatTs(ms) {
+  if (ms == null || ms === '') return '--'
+  try {
+    return new Date(Number(ms)).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+  } catch {
+    return String(ms)
+  }
+}
+
+function formatDurationMs(ms) {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n < 0) return '--'
+  const s = Math.floor(n / 1000)
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  if (d > 0) return `${d}天${h}小时${m}分`
+  if (h > 0) return `${h}小时${m}分${sec}秒`
+  if (m > 0) return `${m}分${sec}秒`
+  return `${sec}秒`
+}
+
+function onUserCardTabChange(user, name) {
+  if (!user.useTestnet) return
+  if (name === 'paperHistory') {
+    loadPaperPositionHistory(user)
+  } else if (name === 'paperOperations') {
+    loadPaperOperations(user)
+  }
+}
+
+async function loadPaperPositionHistory(user) {
+  if (!user?.useTestnet || !user.id) return
+  const st = getPaperHistoryEntry(user.id)
+  st.loading = true
+  st.error = ''
+  try {
+    const params = {
+      user_id: user.id,
+      limit: Math.min(500, Math.max(1, Number(st.limit) || 100)),
+      offset: Math.max(0, Number(st.offset) || 0),
+      order: st.order === 'asc' ? 'asc' : 'desc'
+    }
+    const sym = String(st.symbol || '').trim()
+    if (sym) params.symbol = sym.toUpperCase()
+    if (st.position_side) params.position_side = st.position_side
+    if (st.include_open) params.include_open = 'true'
+
+    const res = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/positions/paper/history`, { params })
+    if (!res.data?.success) {
+      throw new Error(res.data?.message || '请求失败')
+    }
+    const data = res.data.data || {}
+    st.sessions = Array.isArray(data.sessions) ? data.sessions : []
+    let open = data.openPositions || data.open_positions || data.current_contracts || []
+    if (!Array.isArray(open) && data.include_open && Array.isArray(data.positions)) {
+      open = data.positions
+    }
+    st.openPositions = Array.isArray(open) ? open : []
+  } catch (e) {
+    st.error = e.response?.data?.message || e.message || '加载失败'
+    st.sessions = []
+    st.openPositions = []
+  } finally {
+    st.loading = false
+  }
+}
+
+async function loadPaperOperations(user) {
+  if (!user?.useTestnet || !user.id) return
+  const st = getPaperOperationsEntry(user.id)
+  st.loading = true
+  st.error = ''
+  try {
+    const params = {
+      user_id: user.id,
+      limit: Math.min(500, Math.max(1, Number(st.limit) || 500)),
+      offset: Math.max(0, Number(st.offset) || 0),
+      order: st.order === 'desc' ? 'desc' : 'asc'
+    }
+    const res = await axios.get(`${import.meta.env.VITE_API_TRADE}/api/orders/paper/operations`, { params })
+    if (!res.data?.success) {
+      throw new Error(res.data?.message || '请求失败')
+    }
+    const data = res.data.data || {}
+    const ops = data.operations ?? data.items ?? []
+    st.operations = Array.isArray(ops) ? ops : []
+    st.total = data.total != null ? data.total : data.count != null ? data.count : null
+  } catch (e) {
+    st.error = e.response?.data?.message || e.message || '加载失败'
+    st.operations = []
+    st.total = null
+  } finally {
+    st.loading = false
+  }
+}
+
+function parseContentDispositionFilename(cd) {
+  if (!cd || typeof cd !== 'string') return null
+  const star = /filename\*=(?:UTF-8'')?([^;\n]+)/i.exec(cd)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^["']|["']$/g, ''))
+    } catch {
+      return star[1].trim().replace(/^["']|["']$/g, '')
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(cd) || /filename=([^;\n]+)/i.exec(cd)
+  return plain ? plain[1].trim() : null
+}
+
+async function exportPaperOperations(user, format) {
+  if (!user?.useTestnet || !user.id) return
+  const fmt = format === 'csv' ? 'csv' : 'json'
+  try {
+    const url = `${import.meta.env.VITE_API_TRADE}/api/orders/paper/operations/export`
+    const res = await axios.get(url, {
+      params: { user_id: user.id, format: fmt },
+      responseType: 'blob'
+    })
+    const cd = res.headers['content-disposition'] || res.headers['Content-Disposition']
+    let filename = parseContentDispositionFilename(cd)
+    if (!filename) {
+      const alias = String(user.alias || user.id || 'paper').replace(/[^\w.-]+/g, '_')
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      filename = `paper-operations-${alias}-${ts}.${fmt === 'csv' ? 'csv' : 'json'}`
+    }
+    const blob = new Blob([res.data], {
+      type: res.headers['content-type'] || (fmt === 'csv' ? 'text/csv;charset=utf-8' : 'application/json')
+    })
+    const a = document.createElement('a')
+    const href = URL.createObjectURL(blob)
+    a.href = href
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(href)
+  } catch (e) {
+    let msg = e.message || '导出失败'
+    const body = e.response?.data
+    if (body instanceof Blob) {
+      try {
+        const text = await body.text()
+        const j = JSON.parse(text)
+        msg = j.message || j.detail || text.slice(0, 300) || msg
+      } catch {
+        /* keep msg */
+      }
+    } else if (e.response?.data?.message) {
+      msg = e.response.data.message
+    }
+    console.error(msg)
+    alert(msg)
+  }
+}
 
 // 计算属性
 const quickOrderModalTitle = computed(() => {
@@ -1888,6 +2290,15 @@ async function fetchAllAlgoOrders() {
           type_label: order.type_label || 'algo_order'
         }))
       })
+
+      syncPaperAlgoTriggerLocksFromAlgoList()
+      if (autoRefresh.value) {
+        const streamKey = getPositionSymbolsStreamKey()
+        if (streamKey !== lastWsStreamKey) {
+          lastWsStreamKey = streamKey
+          startWebSocketSubscription()
+        }
+      }
     }
   } catch (error) {
     console.error('获取条件单数据失败:', error)
@@ -1970,14 +2381,118 @@ let wsUpdateCount = 0
 let wsErrorCount = 0
 let lastWsStreamKey = ''
 
-function getPositionSymbolsStreamKey() {
-  const s = new Set()
+/** 已成功调用 paper 触发接口，避免同单重复 POST（订单从列表消失后释放） */
+const paperAlgoTriggerSuccessKeys = new Set()
+const paperAlgoTriggerInFlight = new Set()
+
+/** ticker 订阅：全员持仓 + 测试网用户未成交条件单标的 */
+function collectTickerSymbols() {
+  const symbols = new Set()
   users.value.forEach(user => {
     (user.positions || []).forEach(pos => {
-      if (pos.symbol) s.add(String(pos.symbol).toLowerCase())
+      if (pos.symbol) symbols.add(String(pos.symbol).toLowerCase())
+    })
+    if (user.useTestnet && user.algoOrders?.length) {
+      user.algoOrders.forEach(o => {
+        if (String(o.status || '').toUpperCase() === 'NEW' && o.symbol) {
+          symbols.add(String(o.symbol).toLowerCase())
+        }
+      })
+    }
+  })
+  return symbols
+}
+
+function getPositionSymbolsStreamKey() {
+  return [...collectTickerSymbols()].sort().join(',')
+}
+
+function syncPaperAlgoTriggerLocksFromAlgoList() {
+  const openNew = new Set()
+  users.value.forEach(u => {
+    (u.algoOrders || []).forEach(o => {
+      if (String(o.status || '').toUpperCase() === 'NEW') {
+        openNew.add(`${u.id}:${o.algoId}`)
+      }
     })
   })
-  return [...s].sort().join(',')
+  for (const k of [...paperAlgoTriggerSuccessKeys]) {
+    if (!openNew.has(k)) paperAlgoTriggerSuccessKeys.delete(k)
+  }
+}
+
+/** 止盈/止损类条件单（测试网纸面触发）；不含追踪止损等 */
+function classifyPaperAlgoTpSl(orderType) {
+  const t = String(orderType || '').toUpperCase()
+  if (t.includes('TRAILING')) return null
+  if (t.includes('TAKE_PROFIT')) return 'TP'
+  if (t.includes('STOP')) return 'SL'
+  return null
+}
+
+function shouldTriggerPaperTpSl(kind, positionSide, markPrice, triggerPrice) {
+  const trig = Number(triggerPrice)
+  const mark = Number(markPrice)
+  if (!Number.isFinite(trig) || trig <= 0 || !Number.isFinite(mark)) return false
+  const ps = String(positionSide || '').toUpperCase()
+  if (ps === 'LONG') {
+    if (kind === 'TP') return mark >= trig
+    if (kind === 'SL') return mark <= trig
+  }
+  if (ps === 'SHORT') {
+    if (kind === 'TP') return mark <= trig
+    if (kind === 'SL') return mark >= trig
+  }
+  return false
+}
+
+/** 每次 ticker 价格更新：仅测试网用户，按触发价判断是否调用纸面触发接口 */
+function maybeTriggerPaperAlgoOrders(wsSymbol, markPrice) {
+  const symU = String(wsSymbol || '').toUpperCase()
+  if (!symU || !Number.isFinite(Number(markPrice))) return
+
+  users.value.forEach(user => {
+    if (!user.useTestnet) return
+    const algos = user.algoOrders || []
+    for (const order of algos) {
+      if (String(order.status || '').toUpperCase() !== 'NEW') continue
+      if (String(order.symbol || '').toUpperCase() !== symU) continue
+
+      const kind = classifyPaperAlgoTpSl(order.orderType || order.type)
+      if (!kind) continue
+
+      const ps = String(order.positionSide || '').toUpperCase()
+      if (ps !== 'LONG' && ps !== 'SHORT') continue
+
+      if (!shouldTriggerPaperTpSl(kind, ps, markPrice, order.triggerPrice)) continue
+
+      const algoIdRaw = order.algoId
+      const algoNum = Number(algoIdRaw)
+      const algo_id = Number.isFinite(algoNum) ? algoNum : algoIdRaw
+      const key = `${user.id}:${algoIdRaw}`
+
+      if (paperAlgoTriggerSuccessKeys.has(key) || paperAlgoTriggerInFlight.has(key)) continue
+
+      paperAlgoTriggerInFlight.add(key)
+      const payload = {
+        user_id: user.id,
+        algo_id,
+        mark_price: Number(Number(markPrice).toFixed(8))
+      }
+      axios
+        .post(`${import.meta.env.VITE_API_TRADE}/api/orders/paper/algo/trigger`, payload)
+        .then(() => {
+          paperAlgoTriggerSuccessKeys.add(key)
+          console.log(`[paper/algo/trigger] ok ${user.alias} algo_id=${algoIdRaw} ${symU} mark=${payload.mark_price}`)
+        })
+        .catch(err => {
+          console.warn(`[paper/algo/trigger] fail ${user.alias} algo_id=${algoIdRaw}`, err.response?.data || err.message)
+        })
+        .finally(() => {
+          paperAlgoTriggerInFlight.delete(key)
+        })
+    }
+  })
 }
 
 // 更新仓位价格
@@ -2090,6 +2605,9 @@ function updatePositionPrices(symbol, currentPrice) {
     users.value = newUsers
   }
   
+  // 测试网：用 ticker 价判断条件单是否触发（与持仓更新无关，每帧判断）
+  maybeTriggerPaperAlgoOrders(symbol, currentPrice)
+
   // 调试信息：记录价格更新统计
   const updateTime = Date.now() - updateStartTime
   if (foundPositions > 0) {
@@ -2099,27 +2617,31 @@ function updatePositionPrices(symbol, currentPrice) {
 
 // 启动WebSocket价格订阅
 function startWebSocketSubscription() {
-  // 收集所有要订阅的 symbol
-  const symbols = new Set()
-  const userSymbolMap = new Map() // 记录每个币种对应的用户
-  
+  const symbols = collectTickerSymbols()
+  const userSymbolMap = new Map()
+
   users.value.forEach(user => {
-    user.positions.forEach(pos => {
+    (user.positions || []).forEach(pos => {
       if (pos.symbol) {
-        const symbol = pos.symbol.toLowerCase()
-        symbols.add(symbol)
-        
-        // 记录币种对应的用户
-        if (!userSymbolMap.has(symbol)) {
-          userSymbolMap.set(symbol, [])
-        }
+        const symbol = String(pos.symbol).toLowerCase()
+        if (!userSymbolMap.has(symbol)) userSymbolMap.set(symbol, [])
         userSymbolMap.get(symbol).push(user.alias)
       }
     })
+    if (user.useTestnet && user.algoOrders?.length) {
+      user.algoOrders.forEach(o => {
+        if (String(o.status || '').toUpperCase() === 'NEW' && o.symbol) {
+          const symbol = String(o.symbol).toLowerCase()
+          if (!userSymbolMap.has(symbol)) userSymbolMap.set(symbol, [])
+          const tag = `${user.alias}(测条件)`
+          if (!userSymbolMap.get(symbol).includes(tag)) userSymbolMap.get(symbol).push(tag)
+        }
+      })
+    }
   })
 
   if (symbols.size === 0) {
-    console.log('📭 没有仓位需要订阅 WebSocket')
+    console.log('📭 无持仓且无测试网待触发条件单标的，跳过 WebSocket')
     return
   }
 
@@ -2390,14 +2912,15 @@ watch(orderTabType, (newVal) => {
 })
 
 // 批量撤单功能
-function batchCancelOrder(order) {
+function batchCancelOrder(cardUser, order) {
   console.log('批量撤单功能:', order)
   
-  // 设置批量撤单模态框数据
   batchCancelModal.value = {
     show: true,
     loading: false,
-    symbol: order.symbol
+    symbol: order.symbol,
+    scopedUserId: cardUser.useTestnet ? cardUser.id : null,
+    scopedUserAlias: cardUser.useTestnet ? cardUser.alias : ''
   }
 }
 
@@ -2406,14 +2929,46 @@ async function confirmBatchCancel() {
   try {
     batchCancelModal.value.loading = true
     
-    // 构建请求数据
+    const scopedId = batchCancelModal.value.scopedUserId
+    if (scopedId) {
+      const u = getUserById(scopedId)
+      const sym = batchCancelModal.value.symbol
+      const ordersToCancel = []
+      if (u?.orders?.length) {
+        u.orders.forEach(o => {
+          if (o.status === 'NEW' && o.symbol === sym) {
+            ordersToCancel.push({
+              user_id: u.id,
+              symbol: o.symbol,
+              orderId: o.orderId
+            })
+          }
+        })
+      }
+      if (ordersToCancel.length === 0) {
+        alert('该用户在此交易对下没有可撤销的基础挂单')
+        return
+      }
+      const requestData = { orders: ordersToCancel }
+      if (u.useTestnet) requestData.use_testnet = true
+      console.log('发送单用户批量撤基础单:', requestData)
+      const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_by_id`, requestData)
+      if (response.data && response.data.success) {
+        alert(`已撤销 ${ordersToCancel.length} 个基础挂单（${u.alias}）`)
+        batchCancelModal.value.show = false
+        await fetchAllOrders()
+      } else {
+        throw new Error(response.data?.message || '撤单失败')
+      }
+      return
+    }
+    
     const requestData = {
       symbol: batchCancelModal.value.symbol
     }
     
     console.log('发送批量撤单请求:', requestData)
     
-    // 调用后端API
     const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_same`, requestData)
     
     console.log('批量撤单响应:', response.data)
@@ -2504,14 +3059,15 @@ function cancelBatchCancel() {
 }
 
 // 条件单批量撤单功能
-function batchCancelAlgoOrder(order) {
+function batchCancelAlgoOrder(cardUser, order) {
   console.log('批量撤销条件单功能:', order)
   
-  // 设置批量撤销条件单模态框数据
   batchCancelAlgoModal.value = {
     show: true,
     loading: false,
-    symbol: order.symbol
+    symbol: order.symbol,
+    scopedUserId: cardUser.useTestnet ? cardUser.id : null,
+    scopedUserAlias: cardUser.useTestnet ? cardUser.alias : ''
   }
 }
 
@@ -2520,14 +3076,46 @@ async function confirmBatchCancelAlgo() {
   try {
     batchCancelAlgoModal.value.loading = true
     
-    // 构建请求数据
+    const scopedId = batchCancelAlgoModal.value.scopedUserId
+    if (scopedId) {
+      const u = getUserById(scopedId)
+      const sym = batchCancelAlgoModal.value.symbol
+      const ordersToCancel = []
+      if (u?.algoOrders?.length) {
+        u.algoOrders.forEach(o => {
+          if (o.status === 'NEW' && o.symbol === sym) {
+            ordersToCancel.push({
+              user_id: u.id,
+              symbol: o.symbol,
+              algoId: o.algoId
+            })
+          }
+        })
+      }
+      if (ordersToCancel.length === 0) {
+        alert('该用户在此交易对下没有可撤销的条件单')
+        return
+      }
+      const requestData = { orders: ordersToCancel }
+      if (u.useTestnet) requestData.use_testnet = true
+      console.log('发送单用户批量撤条件单:', requestData)
+      const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_by_id`, requestData)
+      if (response.data && response.data.success) {
+        alert(`已撤销 ${ordersToCancel.length} 个条件单（${u.alias}）`)
+        batchCancelAlgoModal.value.show = false
+        await fetchAllAlgoOrders()
+      } else {
+        throw new Error(response.data?.message || '撤销失败')
+      }
+      return
+    }
+    
     const requestData = {
       symbol: batchCancelAlgoModal.value.symbol
     }
     
     console.log('发送批量撤销条件单请求:', requestData)
     
-    // 调用后端API
     const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_same`, requestData)
     
     console.log('批量撤销条件单响应:', response.data)
@@ -2647,14 +3235,13 @@ async function cancelAllAlgoOrders(user) {
       return
     }
     
-    // 准备API请求参数
     const requestData = {
       orders: ordersToCancel
     }
+    if (user.useTestnet) requestData.use_testnet = true
     
     console.log('发送撤销全部条件单请求:', requestData)
     
-    // 调用后端API
     const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/algo/cancel_by_id`, requestData)
     
     console.log('撤销全部条件单响应:', response.data)
@@ -2675,26 +3262,20 @@ async function cancelAllAlgoOrders(user) {
 }
 
 // 撤销单个条件单功能
-async function cancelAlgoOrder(order) {
+async function cancelAlgoOrder(cardUser, order) {
   try {
     console.log('开始撤销条件单:', order)
     
-    // 获取用户ID
-    const userId = users.value.find(u => u.algoOrders?.some(o => o.algoId === order.algoId))?.id
-    if (!userId) {
-      throw new Error('未找到用户ID')
-    }
-    
-    // 准备API请求参数 - 只撤销这一个条件单
     const requestData = {
       orders: [
         {
-          user_id: userId,
+          user_id: cardUser.id,
           symbol: order.symbol,
           algoId: order.algoId
         }
       ]
     }
+    if (cardUser.useTestnet) requestData.use_testnet = true
     
     console.log('发送撤销条件单请求:', requestData)
     
@@ -2748,14 +3329,13 @@ async function cancelAllOrders(user) {
       return
     }
     
-    // 准备API请求参数
     const requestData = {
       orders: ordersToCancel
     }
+    if (user.useTestnet) requestData.use_testnet = true
     
     console.log('发送撤销全部请求:', requestData)
     
-    // 调用后端API
     const response = await axios.post(`${import.meta.env.VITE_API_TRADE}/api/orders/cancel_by_id`, requestData)
     
     console.log('撤销全部响应:', response.data)
@@ -2776,26 +3356,20 @@ async function cancelAllOrders(user) {
 }
 
 // 撤单功能 - 撤销单个订单
-async function cancelOrder(order) {
+async function cancelOrder(cardUser, order) {
   try {
     console.log('开始撤单:', order)
     
-    // 获取用户ID
-    const userId = users.value.find(u => u.orders?.some(o => o.id === order.id))?.id
-    if (!userId) {
-      throw new Error('未找到用户ID')
-    }
-    
-    // 准备API请求参数 - 只撤销这一个订单
     const requestData = {
       orders: [
         {
-          user_id: userId,
+          user_id: cardUser.id,
           symbol: order.symbol,
           orderId: order.orderId
         }
       ]
     }
+    if (cardUser.useTestnet) requestData.use_testnet = true
     
     console.log('发送撤单请求:', requestData)
     
@@ -2898,8 +3472,8 @@ function saveQuickOrderSettings() {
       return
     }
     
-    if (quickOrderUseAllUsers.value && users.value.length === 0) {
-      alert('没有可用的用户')
+    if (quickOrderUseAllUsers.value && usersForBulkAll.value.length === 0) {
+      alert('没有可用的主网用户（当前用户均为测试网或列表为空）')
       return
     }
     
@@ -2935,14 +3509,14 @@ function saveQuickOrderSettings() {
     localStorage.setItem('quickOrderSettings', JSON.stringify(settingsToSave))
     
     // 显示成功消息
-    const userCount = quickOrderUseAllUsers.value ? users.value.length : quickOrderSelectedUsers.value.length
+    const userCount = quickOrderUseAllUsers.value ? usersForBulkAll.value.length : quickOrderSelectedUsers.value.length
     const message = `快速下单设置保存成功！\n\n` +
       `📊 设置详情:\n` +
       `   • 杠杆倍数: ${quickOrderForm.value.leverage}x\n` +
       `   • 仓位百分比: ${quickOrderForm.value.positionPercentage}%\n` +
       `   • 止盈百分比: ${quickOrderForm.value.takeProfitPercentage || '未设置'}%\n` +
       `   • 止损百分比: ${quickOrderForm.value.stopLossPercentage || '未设置'}%\n` +
-      `   • 目标用户: ${quickOrderUseAllUsers.value ? '全部用户' : '部分用户'} (${userCount}人)\n\n` +
+      `   • 目标用户: ${quickOrderUseAllUsers.value ? '全部主网用户（不含测试网）' : '部分用户'} (${userCount}人)\n\n` +
       `💡 提示: 设置已保存，下次打开时会自动加载`
     
     alert(message)
@@ -3110,8 +3684,8 @@ async function submitBatchOrder() {
     return
   }
   
-  if (useAllUsers.value && users.value.length === 0) {
-    alert('没有可用的用户')
+  if (useAllUsers.value && usersForBulkAll.value.length === 0) {
+    alert('没有可用的主网用户（当前用户均为测试网或列表为空）')
     return
   }
   
@@ -3139,9 +3713,10 @@ async function submitBatchOrder() {
     // 计算每个用户的USDT金额
     let userIds, quantities
     if (useAllUsers.value) {
-      // 全部用户：计算所有用户的金额
-      userIds = users.value.map(user => user.id)
-      quantities = users.value.map(user => {
+      // 全部用户：仅主网用户（排除测试网）
+      const list = usersForBulkAll.value
+      userIds = list.map(user => user.id)
+      quantities = list.map(user => {
         const amount = (user.availableBalance || 0) * batchOrderForm.value.positionPercentage / 100
         return Math.round(amount * 100) / 100
       })
@@ -3166,10 +3741,7 @@ async function submitBatchOrder() {
       use_testnet: false
     }
     
-    // 全部用户模式添加all_users字段
-    if (useAllUsers.value) {
-      requestData.all_users = true
-    }
+    // 不再传 all_users：避免后端按「真·全员」覆盖 user_ids；主网全员已体现在 user_ids 中
     
     // 添加限价单价格
     if (batchOrderForm.value.orderType === 'LIMIT' && batchOrderForm.value.price) {
@@ -3313,28 +3885,39 @@ onMounted(async () => {
   startAutoRefresh()
 })
 
-// 仓位操作按钮处理函数
-function handleClosePosition(position) {
+// 仓位操作按钮处理函数（测试网卡片：仅本人；主网：同币种同方向全员）
+function handleClosePosition(cardUser, position) {
   console.log('市价平仓:', position)
   
-  // 查找所有持有相同币种且方向一致的用户
   const affectedUsers = []
-  users.value.forEach(user => {
-    if (user.positions && user.positions.length > 0) {
-      const matchingPosition = user.positions.find(p => 
-        p.symbol === position.symbol && p.side === position.side
-      )
-      if (matchingPosition) {
-        affectedUsers.push({
-          id: user.id,
-          alias: user.alias,
-          position: matchingPosition
-        })
-      }
+  if (cardUser.useTestnet) {
+    const matchingPosition = cardUser.positions?.find(p =>
+      p.symbol === position.symbol && p.side === position.side
+    )
+    if (matchingPosition) {
+      affectedUsers.push({
+        id: cardUser.id,
+        alias: cardUser.alias,
+        position: matchingPosition
+      })
     }
-  })
+  } else {
+    users.value.forEach(user => {
+      if (user.positions && user.positions.length > 0) {
+        const matchingPosition = user.positions.find(p =>
+          p.symbol === position.symbol && p.side === position.side
+        )
+        if (matchingPosition) {
+          affectedUsers.push({
+            id: user.id,
+            alias: user.alias,
+            position: matchingPosition
+          })
+        }
+      }
+    })
+  }
   
-  // 设置弹窗数据
   closePositionModal.value = {
     show: true,
     symbol: position.symbol,
@@ -3342,45 +3925,58 @@ function handleClosePosition(position) {
     percentage: 100,
     affectedUsers: affectedUsers,
     totalExpectedProfit: 0,
-    loading: false
+    loading: false,
+    onlyPaperUser: !!cardUser.useTestnet
   }
   
-  // 计算预计收益
   calculateExpectedProfit()
 }
 
-function handleTpSl(position) {
+function handleTpSl(cardUser, position) {
   console.log('止盈止损:', position)
   
-  // 查找所有持有相同币种且方向一致的用户
   const affectedUsers = []
-  users.value.forEach(user => {
-    if (user.positions && user.positions.length > 0) {
-      const matchingPosition = user.positions.find(p => 
-        p.symbol === position.symbol && p.side === position.side
-      )
-      if (matchingPosition) {
-        affectedUsers.push({
-          id: user.id,
-          alias: user.alias,
-          position: matchingPosition,
-          positions: user.positions, // 添加完整的positions数组
-          expectedTpProfit: 0,
-          expectedSlLoss: 0
-        })
-      }
+  if (cardUser.useTestnet) {
+    const matchingPosition = cardUser.positions?.find(p =>
+      p.symbol === position.symbol && p.side === position.side
+    )
+    if (matchingPosition) {
+      affectedUsers.push({
+        id: cardUser.id,
+        alias: cardUser.alias,
+        position: matchingPosition,
+        positions: cardUser.positions,
+        expectedTpProfit: 0,
+        expectedSlLoss: 0
+      })
     }
-  })
+  } else {
+    users.value.forEach(user => {
+      if (user.positions && user.positions.length > 0) {
+        const matchingPosition = user.positions.find(p =>
+          p.symbol === position.symbol && p.side === position.side
+        )
+        if (matchingPosition) {
+          affectedUsers.push({
+            id: user.id,
+            alias: user.alias,
+            position: matchingPosition,
+            positions: user.positions,
+            expectedTpProfit: 0,
+            expectedSlLoss: 0
+          })
+        }
+      }
+    })
+  }
   
-  console.log('找到的受影响用户:', affectedUsers)
-  
-  // 设置弹窗数据
   tpSlModal.value = {
     show: true,
     symbol: position.symbol,
     side: position.side,
     closeRatio: 100,
     affectedUsers: affectedUsers,
+    onlyPaperUser: !!cardUser.useTestnet,
     takeProfit: {
       enabled: false,
       price: null,
@@ -3394,33 +3990,42 @@ function handleTpSl(position) {
     loading: false
   }
   
-  console.log('设置的模态框数据:', tpSlModal.value)
-  
-  // 立即计算一次预计盈亏
   nextTick(() => {
     updateUserExpectedProfits()
   })
 }
 
-async function handleModifyLeverage(position) {
+async function handleModifyLeverage(cardUser, position) {
   console.log('修改杠杆:', position)
   
-  // 查找所有持有相同币种且方向一致的用户
   const affectedUsers = []
-  users.value.forEach(user => {
-    if (user.positions && user.positions.length > 0) {
-      const matchingPosition = user.positions.find(p => 
-        p.symbol === position.symbol && p.side === position.side
-      )
-      if (matchingPosition) {
-        affectedUsers.push({
-          id: user.id,
-          alias: user.alias,
-          position: matchingPosition
-        })
-      }
+  if (cardUser.useTestnet) {
+    const matchingPosition = cardUser.positions?.find(p =>
+      p.symbol === position.symbol && p.side === position.side
+    )
+    if (matchingPosition) {
+      affectedUsers.push({
+        id: cardUser.id,
+        alias: cardUser.alias,
+        position: matchingPosition
+      })
     }
-  })
+  } else {
+    users.value.forEach(user => {
+      if (user.positions && user.positions.length > 0) {
+        const matchingPosition = user.positions.find(p =>
+          p.symbol === position.symbol && p.side === position.side
+        )
+        if (matchingPosition) {
+          affectedUsers.push({
+            id: user.id,
+            alias: user.alias,
+            position: matchingPosition
+          })
+        }
+      }
+    })
+  }
   
   // 获取当前杠杆（取第一个用户的杠杆作为代表）
   const currentLeverage = affectedUsers.length > 0 ? affectedUsers[0].position.leverage : 0
@@ -3458,7 +4063,8 @@ async function handleModifyLeverage(position) {
     maxLeverage: maxLeverageForSymbol,
     affectedUsers: affectedUsers,
     leverageMarks: leverageMarks,
-    loading: false
+    loading: false,
+    onlyPaperUser: !!cardUser.useTestnet
   }
 }
 
@@ -3715,7 +4321,7 @@ async function confirmTpSl() {
       symbol: tpSlModal.value.symbol,
       position_side: tpSlModal.value.side,
       user_orders: {},
-      use_testnet: false
+      use_testnet: !!tpSlModal.value.onlyPaperUser
     }
     
     // 为每个用户计算平仓量
@@ -3828,7 +4434,7 @@ async function confirmModifyLeverage() {
       symbol: modifyLeverageModal.value.symbol,
       position_side: modifyLeverageModal.value.side,
       new_leverage: modifyLeverageModal.value.newLeverage,
-      use_testnet: false
+      use_testnet: !!modifyLeverageModal.value.onlyPaperUser
     }
     
     console.log('发送修改杠杆请求:', requestData)
@@ -3924,7 +4530,7 @@ async function confirmClosePosition() {
       symbol: closePositionModal.value.symbol,
       position_side: closePositionModal.value.side,
       close_ratio: closePositionModal.value.percentage,
-      use_testnet: false
+      use_testnet: !!closePositionModal.value.onlyPaperUser
     }
     
     console.log('发送平仓请求:', requestData)
@@ -5532,5 +6138,112 @@ window.startWebSocketSubscription = startWebSocketSubscription
   font-size: 12px;
   color: var(--n-text-color-3);
   margin-left: 8px;
+}
+
+.paper-history-tab {
+  padding-top: 8px;
+}
+
+.paper-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.paper-history-error {
+  color: var(--n-color-error);
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.paper-history-loading {
+  padding: 16px;
+  color: var(--n-text-color-3);
+}
+
+.paper-history-h4 {
+  margin: 12px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.paper-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.paper-session-card {
+  padding: 10px 12px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 10px;
+  background: var(--n-card-color);
+}
+
+.paper-session-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.paper-session-row:last-child {
+  margin-bottom: 0;
+}
+
+.paper-session-row.ph-small {
+  font-size: 12px;
+  color: var(--n-text-color-2);
+}
+
+.ph-strong {
+  font-weight: 700;
+}
+
+.ph-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--n-border-color) 50%, transparent);
+}
+
+.ph-muted {
+  color: var(--n-text-color-3);
+  font-size: 12px;
+}
+
+.ph-mono {
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+}
+
+.paper-ops-tab {
+  padding-top: 8px;
+}
+
+.paper-ops-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+}
+
+.paper-op-card {
+  padding: 10px 12px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 10px;
+  background: var(--n-card-color);
+}
+
+.paper-op-narrative {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--n-text-color);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

@@ -129,7 +129,7 @@
           </n-descriptions-item>
           <n-descriptions-item label="用户模式">
             <n-tag type="primary">
-              {{ quickOrderConfirmData.settings.useAllUsers ? '全部用户' : '指定用户' }}
+              {{ quickOrderConfirmData.settings.useAllUsers ? '全部主网用户（不含测试网）' : '指定用户' }}
             </n-tag>
           </n-descriptions-item>
           <n-descriptions-item label="订单类型">
@@ -158,7 +158,7 @@
           <template #header>
             确认执行快速下单
           </template>
-          此操作将使用上述设置对所有{{ quickOrderConfirmData.settings.useAllUsers ? '用户' : '选中用户' }}执行{{ quickOrderConfirmData.side === 'BUY' ? '开多' : '开空' }}操作，请确认无误后点击"确认下单"。
+          此操作将使用上述设置对{{ quickOrderConfirmData.settings.useAllUsers ? '全部主网用户（不含测试网）' : '选中用户' }}执行{{ quickOrderConfirmData.side === 'BUY' ? '开多' : '开空' }}操作，请确认无误后点击"确认下单"。
         </n-alert>
       </div>
       
@@ -3273,7 +3273,7 @@ async function executeQuickOrder(symbol, side, positionSide) {
     // 根据设置确定目标用户
     let targetUsers = []
     if (settings.useAllUsers) {
-      targetUsers = allUsers
+      targetUsers = allUsers.filter(u => !u.use_testnet)
     } else if (settings.selectedUsers && settings.selectedUsers.length > 0) {
       targetUsers = allUsers.filter(user => settings.selectedUsers.includes(user.id))
     } else {
@@ -3282,7 +3282,7 @@ async function executeQuickOrder(symbol, side, positionSide) {
     }
     
     if (targetUsers.length === 0) {
-      alert('没有可用的用户')
+      alert(settings.useAllUsers ? '没有可用的主网用户（当前均为测试网或列表为空）' : '没有可用的用户')
       return
     }
     
