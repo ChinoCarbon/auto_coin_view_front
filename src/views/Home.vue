@@ -75,7 +75,7 @@
 
     <n-layout-footer class="footer-container">
       <div class="footer-content">
-        <span class="footer-title">动态表格 V9.7.1(自动加币/模拟仓位测试)</span>
+        <span class="footer-title">动态表格 V9.7.2(自动加币/模拟仓位测试/macd计算修改/优化历史数据)</span>
       </div>
     </n-layout-footer>
     
